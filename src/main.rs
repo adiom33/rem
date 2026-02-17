@@ -248,7 +248,10 @@ fn render_status_bar(
 /// Global flag: set to true when we've stopped xochitl and need to restart it on exit.
 static XOCHITL_STOPPED: AtomicBool = AtomicBool::new(false);
 
-/// Restart xochitl using systemctl. Safe to call from signal/panic context.
+/// Global flag: set by signal handler to request clean exit from main loop.
+static SIGNAL_EXIT: AtomicBool = AtomicBool::new(false);
+
+/// Restart xochitl using systemctl. NOT safe to call from signal handlers.
 fn restart_xochitl() {
     if XOCHITL_STOPPED.swap(false, Ordering::SeqCst) {
         eprintln!("Restarting xochitl...");
@@ -259,14 +262,10 @@ fn restart_xochitl() {
     }
 }
 
-/// Signal handler for SIGINT/SIGTERM — restarts xochitl then exits.
-extern "C" fn signal_handler(sig: sys::c_int) {
-    restart_xochitl();
-    // Re-raise with default handler to get proper exit status
-    unsafe {
-        sys::signal(sig, std::mem::transmute::<usize, sys::sighandler_t>(sys::SIG_DFL));
-        sys::kill(0, sig); // kill self
-    }
+/// Signal handler for SIGINT/SIGTERM — sets exit flag only (async-signal-safe).
+/// The main loop checks this flag and does the actual cleanup.
+extern "C" fn signal_handler(_sig: sys::c_int) {
+    SIGNAL_EXIT.store(true, Ordering::SeqCst);
 }
 
 /// Stop xochitl so we can own the framebuffer. Installs safety hooks to restart it.
@@ -489,10 +488,16 @@ fn main() {
             )
         };
 
+        // Check if a signal requested exit
+        if SIGNAL_EXIT.load(Ordering::SeqCst) {
+            eprintln!("Signal received, exiting...");
+            break;
+        }
+
         if ret < 0 {
             let err = std::io::Error::last_os_error();
             if err.kind() == std::io::ErrorKind::Interrupted {
-                continue;
+                continue; // Signal interrupted poll; loop back to check SIGNAL_EXIT
             }
             eprintln!("poll error: {}", err);
             break;
