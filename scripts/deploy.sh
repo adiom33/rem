@@ -11,31 +11,58 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-TARGET="armv7-unknown-linux-musleabihf"
 BINARY_NAME="remarkable-ssh"
-BINARY_PATH="${PROJECT_DIR}/target/${TARGET}/release/${BINARY_NAME}"
 
 RM_IP="${1:-10.11.99.1}"
 RM_USER="root"
 RM_DEST="/home/root/${BINARY_NAME}"
 
-if [ ! -f "$BINARY_PATH" ]; then
-    echo "Binary not found at: $BINARY_PATH"
-    echo "Run ./scripts/build.sh first."
+SSH_OPTS=(-o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=3)
+
+# Preflight checks
+for tool in ssh scp; do
+    if ! command -v "$tool" &>/dev/null; then
+        echo "ERROR: '$tool' not found. Install OpenSSH."
+        exit 1
+    fi
+done
+
+# Find the built binary (build.sh may use musl or gnueabihf target)
+BINARY_PATH=""
+for target in armv7-unknown-linux-musleabihf armv7-unknown-linux-gnueabihf; do
+    candidate="${PROJECT_DIR}/target/${target}/release/${BINARY_NAME}"
+    if [ -f "$candidate" ]; then
+        BINARY_PATH="$candidate"
+        break
+    fi
+done
+
+if [ -z "$BINARY_PATH" ]; then
+    echo "Binary not found. Run ./scripts/build.sh first."
     exit 1
 fi
 
+# Get binary size (stat is more robust than ls+awk)
+if stat --version &>/dev/null 2>&1; then
+    # GNU stat
+    BINARY_SIZE="$(stat -c %s "$BINARY_PATH")"
+else
+    # BSD/macOS stat
+    BINARY_SIZE="$(stat -f %z "$BINARY_PATH")"
+fi
+BINARY_SIZE_KB=$((BINARY_SIZE / 1024))
+
 echo "Deploying to reMarkable at ${RM_IP}..."
 echo "Binary: ${BINARY_PATH}"
-echo "  Size: $(ls -lh "$BINARY_PATH" | awk '{print $5}')"
+echo "  Size: ${BINARY_SIZE_KB}KB"
 echo ""
 
 # Copy binary
-scp "$BINARY_PATH" "${RM_USER}@${RM_IP}:${RM_DEST}"
+scp "${SSH_OPTS[@]}" -- "$BINARY_PATH" "${RM_USER}@${RM_IP}:${RM_DEST}"
 echo "Copied to ${RM_DEST}"
 
 # Make executable
-ssh "${RM_USER}@${RM_IP}" "chmod +x ${RM_DEST}"
+ssh "${SSH_OPTS[@]}" -- "${RM_USER}@${RM_IP}" "chmod +x ${RM_DEST}"
 echo "Made executable."
 
 echo ""
@@ -43,17 +70,8 @@ echo "=== Deployed successfully ==="
 echo ""
 echo "To run on the reMarkable:"
 echo ""
-echo "  1. SSH into your reMarkable:"
-echo "     ssh root@${RM_IP}"
+echo "  ssh root@${RM_IP}"
+echo "  ${RM_DEST} user@your-server-ip"
 echo ""
-echo "  2. Stop the UI (xochitl) to free the framebuffer:"
-echo "     systemctl stop xochitl"
-echo ""
-echo "  3. Run the terminal:"
-echo "     ${RM_DEST} user@your-server-ip"
-echo ""
-echo "  4. When done, restart the UI:"
-echo "     systemctl start xochitl"
-echo ""
-echo "  Or, run it as a one-liner:"
-echo "     systemctl stop xochitl && ${RM_DEST} user@100.64.0.1 ; systemctl start xochitl"
+echo "Or use the all-in-one script:"
+echo "  ./scripts/run-remote.sh ${RM_IP} user@your-server-ip"

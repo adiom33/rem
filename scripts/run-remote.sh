@@ -2,48 +2,86 @@
 # One-shot: build, deploy, and run remarkable-ssh on the reMarkable.
 #
 # USAGE:
-#   ./scripts/run-remote.sh [REMARKABLE_IP] [SSH_TARGET]
+#   ./scripts/run-remote.sh [REMARKABLE_IP] [SSH_TARGET] [EXTRA_ARGS...]
 #
 # EXAMPLES:
-#   ./scripts/run-remote.sh                           # local shell on rM
-#   ./scripts/run-remote.sh 10.11.99.1 user@100.64.0.1  # SSH to Tailscale host
+#   ./scripts/run-remote.sh                                    # local shell on rM
+#   ./scripts/run-remote.sh 10.11.99.1 user@100.64.0.1        # SSH to Tailscale host
+#   ./scripts/run-remote.sh 10.11.99.1 user@host --tmux       # with tmux
 #
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-TARGET="armv7-unknown-linux-musleabihf"
 BINARY_NAME="remarkable-ssh"
-BINARY_PATH="${PROJECT_DIR}/target/${TARGET}/release/${BINARY_NAME}"
 
 RM_IP="${1:-10.11.99.1}"
 SSH_TARGET="${2:-}"
+shift 2 2>/dev/null || true
+EXTRA_ARGS=("$@")
+
 RM_USER="root"
 RM_DEST="/home/root/${BINARY_NAME}"
+
+SSH_OPTS=(-o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=3)
+
+# Preflight checks
+for tool in ssh scp; do
+    if ! command -v "$tool" &>/dev/null; then
+        echo "ERROR: '$tool' not found. Install OpenSSH."
+        exit 1
+    fi
+done
 
 # Step 1: Build
 echo "=== Building ==="
 "$SCRIPT_DIR/build.sh"
+
+# Find the built binary (build.sh may use musl or gnueabihf target)
+BINARY_PATH=""
+for target in armv7-unknown-linux-musleabihf armv7-unknown-linux-gnueabihf; do
+    candidate="${PROJECT_DIR}/target/${target}/release/${BINARY_NAME}"
+    if [ -f "$candidate" ]; then
+        BINARY_PATH="$candidate"
+        break
+    fi
+done
+if [ -z "$BINARY_PATH" ]; then
+    echo "ERROR: Built binary not found. Check build output above."
+    exit 1
+fi
 echo ""
 
 # Step 2: Deploy
 echo "=== Deploying to ${RM_IP} ==="
-scp "$BINARY_PATH" "${RM_USER}@${RM_IP}:${RM_DEST}"
-ssh "${RM_USER}@${RM_IP}" "chmod +x ${RM_DEST}"
+scp "${SSH_OPTS[@]}" -- "$BINARY_PATH" "${RM_USER}@${RM_IP}:${RM_DEST}"
+ssh "${SSH_OPTS[@]}" -- "${RM_USER}@${RM_IP}" "chmod +x ${RM_DEST}"
 echo "Deployed."
 echo ""
 
 # Step 3: Run
 echo "=== Running on reMarkable ==="
-echo "Stopping xochitl..."
+echo ""
+echo "TIP: If the screen stays blank, check the log output."
+echo "     'No working MXCFB ioctl' means you need rm2fb. See README.md."
+echo ""
 
-CMD="${RM_DEST}"
+# Build the remote command with proper quoting.
+# Use trap EXIT to guarantee xochitl restarts even on crash/signal.
+REMOTE_CMD="set -e; trap 'systemctl start xochitl' EXIT; systemctl stop xochitl; ${RM_DEST}"
+
+# Append SSH target as a properly quoted argument
 if [ -n "$SSH_TARGET" ]; then
-    CMD="${CMD} ${SSH_TARGET}"
+    # Use printf %q to safely shell-quote the argument
+    REMOTE_CMD="${REMOTE_CMD} $(printf '%q' "$SSH_TARGET")"
 fi
 
-# Stop xochitl, run our terminal, then restart xochitl
-ssh -t "${RM_USER}@${RM_IP}" "systemctl stop xochitl && ${CMD} ; systemctl start xochitl"
+# Append any extra args (--tmux, --keyboard, etc.)
+for arg in "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"; do
+    REMOTE_CMD="${REMOTE_CMD} $(printf '%q' "$arg")"
+done
+
+ssh -t "${SSH_OPTS[@]}" -- "${RM_USER}@${RM_IP}" "$REMOTE_CMD"
 
 echo ""
 echo "Session ended. xochitl restarted."
