@@ -44,6 +44,11 @@ pub struct Terminal {
     current_param: Option<u32>,
     private_mode: bool,
 
+    // UTF-8 decoder state
+    utf8_buf: [u8; 4],
+    utf8_len: usize,   // expected total bytes
+    utf8_idx: usize,   // bytes received so far
+
     // Current text attributes
     bold: bool,
     inverse: bool,
@@ -58,6 +63,12 @@ pub struct Terminal {
 
     // Application cursor keys mode (DECCKM)
     pub app_cursor_keys: bool,
+
+    // Dirty rectangle tracking (cell coordinates)
+    pub dirty_min_row: usize,
+    pub dirty_max_row: usize,
+    pub dirty_min_col: usize,
+    pub dirty_max_col: usize,
 
     // Cursor visibility
     pub cursor_visible: bool,
@@ -87,6 +98,9 @@ impl Terminal {
             params: Vec::new(),
             current_param: None,
             private_mode: false,
+            utf8_buf: [0; 4],
+            utf8_len: 0,
+            utf8_idx: 0,
             bold: false,
             inverse: false,
             scroll_top: 0,
@@ -94,6 +108,10 @@ impl Terminal {
             saved_x: 0,
             saved_y: 0,
             app_cursor_keys: false,
+            dirty_min_row: 0,
+            dirty_max_row: rows.saturating_sub(1),
+            dirty_min_col: 0,
+            dirty_max_col: cols.saturating_sub(1),
             cursor_visible: true,
             alt_grid,
             alt_cursor_x: 0,
@@ -104,9 +122,73 @@ impl Terminal {
     }
 
     /// Process a chunk of bytes from the PTY.
+    /// Handles UTF-8 decoding: ASCII bytes pass through directly,
+    /// multi-byte UTF-8 sequences are decoded and non-ASCII codepoints
+    /// render as '?' to prevent state corruption.
     pub fn process(&mut self, data: &[u8]) {
         for &byte in data {
+            // If we're inside an escape/CSI/OSC sequence, bytes are always ASCII control
+            if self.state != State::Normal {
+                // Abort any in-progress UTF-8 sequence
+                if self.utf8_len > 0 {
+                    self.put_char(b'?');
+                    self.utf8_len = 0;
+                    self.utf8_idx = 0;
+                }
+                self.process_byte(byte);
+                continue;
+            }
+
+            // UTF-8 state machine for Normal state
+            if self.utf8_len > 0 {
+                // We're collecting a multi-byte sequence
+                if byte & 0xC0 == 0x80 {
+                    // Valid continuation byte
+                    self.utf8_buf[self.utf8_idx] = byte;
+                    self.utf8_idx += 1;
+                    if self.utf8_idx == self.utf8_len {
+                        // Complete sequence — render placeholder
+                        self.put_char(b'?');
+                        self.utf8_len = 0;
+                        self.utf8_idx = 0;
+                    }
+                } else {
+                    // Invalid continuation — emit placeholder for broken sequence
+                    self.put_char(b'?');
+                    self.utf8_len = 0;
+                    self.utf8_idx = 0;
+                    // Re-process this byte
+                    self.process_byte_utf8(byte);
+                }
+            } else {
+                self.process_byte_utf8(byte);
+            }
+        }
+    }
+
+    /// Classify a byte and either process it directly or start a UTF-8 sequence.
+    fn process_byte_utf8(&mut self, byte: u8) {
+        if byte < 0x80 {
+            // ASCII — pass through directly
             self.process_byte(byte);
+        } else if byte & 0xE0 == 0xC0 {
+            // 2-byte sequence start (110xxxxx)
+            self.utf8_buf[0] = byte;
+            self.utf8_len = 2;
+            self.utf8_idx = 1;
+        } else if byte & 0xF0 == 0xE0 {
+            // 3-byte sequence start (1110xxxx)
+            self.utf8_buf[0] = byte;
+            self.utf8_len = 3;
+            self.utf8_idx = 1;
+        } else if byte & 0xF8 == 0xF0 {
+            // 4-byte sequence start (11110xxx)
+            self.utf8_buf[0] = byte;
+            self.utf8_len = 4;
+            self.utf8_idx = 1;
+        } else {
+            // Stray continuation byte or invalid — render placeholder
+            self.put_char(b'?');
         }
     }
 
@@ -559,12 +641,30 @@ impl Terminal {
         }
     }
 
+    /// Expand the dirty rectangle to include the given cell position.
+    #[inline]
+    fn mark_cell_dirty(&mut self, row: usize, col: usize) {
+        if row < self.dirty_min_row { self.dirty_min_row = row; }
+        if row > self.dirty_max_row { self.dirty_max_row = row; }
+        if col < self.dirty_min_col { self.dirty_min_col = col; }
+        if col > self.dirty_max_col { self.dirty_max_col = col; }
+    }
+
+    /// Expand dirty rect to cover entire screen.
+    fn mark_all_dirty(&mut self) {
+        self.dirty_min_row = 0;
+        self.dirty_max_row = self.rows.saturating_sub(1);
+        self.dirty_min_col = 0;
+        self.dirty_max_col = self.cols.saturating_sub(1);
+    }
+
     fn put_char(&mut self, ch: u8) {
         if self.cursor_x >= self.cols {
             // Line wrap
             self.cursor_x = 0;
             self.line_feed();
         }
+        self.mark_cell_dirty(self.cursor_y, self.cursor_x);
         self.grid[self.cursor_y][self.cursor_x] = Cell {
             ch,
             bold: self.bold,
@@ -594,22 +694,20 @@ impl Terminal {
     fn scroll_up(&mut self) {
         let top = self.scroll_top;
         let bottom = self.scroll_bottom;
-        // Remove top line, insert blank at bottom
         self.grid.remove(top);
         self.grid.insert(bottom, vec![Cell::default(); self.cols]);
-        // Mark all rows in scroll region dirty
         for row in top..=bottom {
             for cell in &mut self.grid[row] {
                 cell.dirty = true;
             }
         }
+        self.mark_all_dirty();
         self.dirty = true;
     }
 
     fn scroll_down(&mut self) {
         let top = self.scroll_top;
         let bottom = self.scroll_bottom;
-        // Remove bottom line, insert blank at top
         self.grid.remove(bottom);
         self.grid.insert(top, vec![Cell::default(); self.cols]);
         for row in top..=bottom {
@@ -617,6 +715,7 @@ impl Terminal {
                 cell.dirty = true;
             }
         }
+        self.mark_all_dirty();
         self.dirty = true;
     }
 
@@ -650,6 +749,7 @@ impl Terminal {
             }
             _ => {}
         }
+        self.mark_all_dirty();
         self.dirty = true;
     }
 
@@ -676,6 +776,9 @@ impl Terminal {
             }
             _ => {}
         }
+        // erase_line: mark the affected row in dirty rect
+        self.mark_cell_dirty(row, 0);
+        self.mark_cell_dirty(row, self.cols.saturating_sub(1));
         self.dirty = true;
     }
 
@@ -691,6 +794,7 @@ impl Terminal {
                 cell.dirty = true;
             }
         }
+        self.mark_all_dirty();
         self.dirty = true;
     }
 
@@ -706,6 +810,7 @@ impl Terminal {
                 cell.dirty = true;
             }
         }
+        self.mark_all_dirty();
         self.dirty = true;
     }
 
@@ -721,6 +826,8 @@ impl Terminal {
         for cell in &mut self.grid[row][x..] {
             cell.dirty = true;
         }
+        self.mark_cell_dirty(row, x);
+        self.mark_cell_dirty(row, self.cols.saturating_sub(1));
         self.dirty = true;
     }
 
@@ -736,6 +843,8 @@ impl Terminal {
         for cell in &mut self.grid[row][x..] {
             cell.dirty = true;
         }
+        self.mark_cell_dirty(row, x);
+        self.mark_cell_dirty(row, self.cols.saturating_sub(1));
         self.dirty = true;
     }
 
@@ -799,12 +908,20 @@ impl Terminal {
     }
 
     /// Mark all cells as clean (call after rendering).
-    pub fn mark_clean(&mut self) {
+    /// Returns the dirty rectangle as (min_row, min_col, max_row, max_col).
+    pub fn mark_clean(&mut self) -> (usize, usize, usize, usize) {
+        let rect = (self.dirty_min_row, self.dirty_min_col, self.dirty_max_row, self.dirty_max_col);
         for row in &mut self.grid {
             for cell in row {
                 cell.dirty = false;
             }
         }
         self.dirty = false;
+        // Reset dirty rect to empty (inside-out range)
+        self.dirty_min_row = self.rows;
+        self.dirty_max_row = 0;
+        self.dirty_min_col = self.cols;
+        self.dirty_max_col = 0;
+        rect
     }
 }

@@ -45,6 +45,7 @@ fn print_usage() {
     eprintln!("  --tmux          Auto-attach/create tmux session on remote host");
     eprintln!("  --cmd STRING    Remote command to run via SSH");
     eprintln!("  --ssh-args ARGS Extra arguments passed to SSH (comma-separated)");
+    eprintln!("  --ssh-arg ARG   Extra SSH argument (repeatable)");
     eprintln!("  --help          Show this help");
     eprintln!();
     eprintln!("EXAMPLES:");
@@ -55,6 +56,7 @@ fn print_usage() {
     eprintln!("  remarkable-ssh --tmux user@myhost     # Auto-attach to tmux");
     eprintln!("  remarkable-ssh --cmd htop user@myhost # Run htop remotely");
     eprintln!("  remarkable-ssh --kb /dev/input/event3 user@myhost");
+    eprintln!("  remarkable-ssh --ssh-arg -i --ssh-arg /path/to/key user@host");
 }
 
 struct Config {
@@ -139,6 +141,12 @@ fn parse_args() -> Config {
                             config.ssh_extra_args.push(trimmed.to_string());
                         }
                     }
+                }
+            }
+            "--ssh-arg" => {
+                i += 1;
+                if i < args.len() {
+                    config.ssh_extra_args.push(args[i].clone());
                 }
             }
             "--help" | "-h" => {
@@ -375,7 +383,7 @@ fn main() {
 
         // Remote command: --tmux takes precedence, then --cmd
         if config.tmux {
-            argv.push("tmux attach || tmux new".to_string());
+            argv.push("tmux attach || tmux new -s main".to_string());
         } else if let Some(ref cmd) = config.remote_cmd {
             argv.push(cmd.clone());
         }
@@ -550,9 +558,24 @@ fn main() {
             if elapsed >= REFRESH_DEBOUNCE_MS || ret == 0 {
                 render_terminal(&mut fb, &term, scale, 0);
                 render_status_bar(&mut fb, &term, scale, term_area_height, display_target);
-                term.mark_clean();
+                let (min_row, min_col, max_row, max_col) = term.mark_clean();
 
-                fb.refresh_terminal(term_area_height as u32 + status_bar_height as u32);
+                // Use dirty rect to refresh only the changed region
+                if min_row <= max_row && min_col <= max_col {
+                    let refresh_x = (min_col * char_w) as u32;
+                    let refresh_y = (min_row * char_h) as u32;
+                    let refresh_w = ((max_col - min_col + 1) * char_w) as u32;
+                    // Include status bar if dirty rect extends to bottom
+                    let refresh_h = if max_row >= term.rows.saturating_sub(1) {
+                        ((max_row - min_row + 1) * char_h) as u32 + status_bar_height as u32
+                    } else {
+                        ((max_row - min_row + 1) * char_h) as u32
+                    };
+                    fb.refresh_fast(refresh_x, refresh_y, refresh_w, refresh_h);
+                } else {
+                    // Fallback: refresh full terminal area (e.g. status bar only)
+                    fb.refresh_terminal(term_area_height as u32 + status_bar_height as u32);
+                }
 
                 last_refresh = Instant::now();
                 needs_refresh = false;
