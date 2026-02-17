@@ -43,6 +43,14 @@ pub const WNOHANG: c_int = 1;
 
 // signals
 pub const SIGHUP: c_int = 1;
+pub const SIGINT: c_int = 2;
+pub const SIGTERM: c_int = 15;
+
+// signal handling
+pub const SIG_DFL: usize = 0;
+
+// For sigaction-based signal handling
+pub type sighandler_t = extern "C" fn(c_int);
 
 // ioctl for TTY
 pub const TIOCSCTTY: c_ulong = 0x540E;
@@ -131,6 +139,12 @@ extern "C" {
 
     // Sleep
     pub fn usleep(usec: c_uint) -> c_int;
+
+    // Signal handling
+    pub fn signal(signum: c_int, handler: sighandler_t) -> usize;
+
+    // System command execution
+    pub fn system(command: *const c_char) -> c_int;
 }
 
 /// Get the last errno value.

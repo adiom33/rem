@@ -58,11 +58,24 @@ pub struct Terminal {
 
     // Application cursor keys mode (DECCKM)
     pub app_cursor_keys: bool,
+
+    // Cursor visibility
+    pub cursor_visible: bool,
+
+    // Alternate screen buffer
+    alt_grid: Vec<Vec<Cell>>,
+    alt_cursor_x: usize,
+    alt_cursor_y: usize,
+    pub using_alt_screen: bool,
+
+    // Bracketed paste mode
+    pub bracketed_paste: bool,
 }
 
 impl Terminal {
     pub fn new(cols: usize, rows: usize) -> Self {
         let grid = vec![vec![Cell::default(); cols]; rows];
+        let alt_grid = vec![vec![Cell::default(); cols]; rows];
         Terminal {
             cols,
             rows,
@@ -81,6 +94,12 @@ impl Terminal {
             saved_x: 0,
             saved_y: 0,
             app_cursor_keys: false,
+            cursor_visible: true,
+            alt_grid,
+            alt_cursor_x: 0,
+            alt_cursor_y: 0,
+            using_alt_screen: false,
+            bracketed_paste: false,
         }
     }
 
@@ -381,10 +400,22 @@ impl Terminal {
                 // Set Mode
                 self.finish_params();
                 if self.private_mode {
-                    for &p in &self.params {
+                    let params = self.params.clone();
+                    for &p in &params {
                         match p {
-                            1 => self.app_cursor_keys = true, // DECCKM
-                            25 => {} // Show cursor (we always show it)
+                            1 => self.app_cursor_keys = true,     // DECCKM
+                            25 => self.cursor_visible = true,     // Show cursor
+                            1047 => self.switch_to_alt_screen(),  // Alt screen
+                            1048 => {                             // Save cursor
+                                self.saved_x = self.cursor_x;
+                                self.saved_y = self.cursor_y;
+                            }
+                            1049 => {                             // Save cursor + alt screen
+                                self.saved_x = self.cursor_x;
+                                self.saved_y = self.cursor_y;
+                                self.switch_to_alt_screen();
+                            }
+                            2004 => self.bracketed_paste = true,  // Bracketed paste
                             _ => {}
                         }
                     }
@@ -395,10 +426,22 @@ impl Terminal {
                 // Reset Mode
                 self.finish_params();
                 if self.private_mode {
-                    for &p in &self.params {
+                    let params = self.params.clone();
+                    for &p in &params {
                         match p {
-                            1 => self.app_cursor_keys = false, // DECCKM
-                            25 => {} // Hide cursor
+                            1 => self.app_cursor_keys = false,     // DECCKM
+                            25 => self.cursor_visible = false,     // Hide cursor
+                            1047 => self.switch_to_main_screen(),  // Main screen
+                            1048 => {                              // Restore cursor
+                                self.cursor_x = self.saved_x.min(self.cols.saturating_sub(1));
+                                self.cursor_y = self.saved_y.min(self.rows.saturating_sub(1));
+                            }
+                            1049 => {                              // Main screen + restore cursor
+                                self.switch_to_main_screen();
+                                self.cursor_x = self.saved_x.min(self.cols.saturating_sub(1));
+                                self.cursor_y = self.saved_y.min(self.rows.saturating_sub(1));
+                            }
+                            2004 => self.bracketed_paste = false,  // Bracketed paste off
                             _ => {}
                         }
                     }
@@ -696,7 +739,53 @@ impl Terminal {
         self.dirty = true;
     }
 
+    /// Switch to alternate screen buffer (used by tmux, vim, less, etc.)
+    fn switch_to_alt_screen(&mut self) {
+        if self.using_alt_screen {
+            return;
+        }
+        // Save main screen state
+        self.alt_cursor_x = self.cursor_x;
+        self.alt_cursor_y = self.cursor_y;
+        // Swap grids
+        std::mem::swap(&mut self.grid, &mut self.alt_grid);
+        // Clear the (now active) alt screen
+        for row in &mut self.grid {
+            for cell in row {
+                *cell = Cell::default();
+            }
+        }
+        self.cursor_x = 0;
+        self.cursor_y = 0;
+        self.using_alt_screen = true;
+        self.dirty = true;
+    }
+
+    /// Switch back to main screen buffer
+    fn switch_to_main_screen(&mut self) {
+        if !self.using_alt_screen {
+            return;
+        }
+        // Swap grids back
+        std::mem::swap(&mut self.grid, &mut self.alt_grid);
+        // Restore main screen cursor
+        self.cursor_x = self.alt_cursor_x.min(self.cols.saturating_sub(1));
+        self.cursor_y = self.alt_cursor_y.min(self.rows.saturating_sub(1));
+        self.using_alt_screen = false;
+        // Mark entire screen dirty for full redraw
+        for row in &mut self.grid {
+            for cell in row {
+                cell.dirty = true;
+            }
+        }
+        self.dirty = true;
+    }
+
     fn reset(&mut self) {
+        // If on alt screen, switch back first
+        if self.using_alt_screen {
+            self.switch_to_main_screen();
+        }
         self.cursor_x = 0;
         self.cursor_y = 0;
         self.bold = false;
@@ -704,6 +793,8 @@ impl Terminal {
         self.scroll_top = 0;
         self.scroll_bottom = self.rows - 1;
         self.app_cursor_keys = false;
+        self.cursor_visible = true;
+        self.bracketed_paste = false;
         self.erase_display(2);
     }
 

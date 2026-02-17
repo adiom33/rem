@@ -114,13 +114,143 @@ struct Modifiers {
     caps_lock: bool,
 }
 
+// ioctl numbers for evdev queries
+
+/// Compute EVIOCGNAME(len) ioctl number
+fn eviocgname(len: usize) -> sys::c_ulong {
+    // _IOC(_IOC_READ, 'E', 0x06, len) for ARM/x86
+    // direction=2 (read), type='E'=0x45, nr=0x06, size=len
+    (2 << 30) | ((len as sys::c_ulong) << 16) | (0x45 << 8) | 0x06
+}
+
+/// Compute EVIOCGBIT(ev_type, len) ioctl number
+fn eviocgbit(ev_type: u16, len: usize) -> sys::c_ulong {
+    // _IOC(_IOC_READ, 'E', 0x20 + ev_type, len)
+    (2 << 30) | ((len as sys::c_ulong) << 16) | (0x45 << 8) | (0x20 + ev_type as sys::c_ulong)
+}
+
+/// Check if a bit is set in a bitfield array
+fn bit_is_set(bits: &[u8], bit: u16) -> bool {
+    let byte_idx = (bit / 8) as usize;
+    let bit_idx = bit % 8;
+    if byte_idx < bits.len() {
+        (bits[byte_idx] >> bit_idx) & 1 != 0
+    } else {
+        false
+    }
+}
+
+/// Check if an evdev device looks like a keyboard by querying its capabilities.
+/// Returns true if the device supports KEY_A through KEY_Z and KEY_ENTER.
+fn is_keyboard_device(fd: sys::c_int) -> bool {
+    // Query EV_KEY capability bits - we need enough bytes for key code 111 (KEY_DELETE)
+    // That's ceil(112/8) = 14 bytes minimum, use 64 to be safe
+    let mut key_bits = [0u8; 64];
+    let ret = unsafe {
+        sys::ioctl(fd, eviocgbit(EV_KEY, key_bits.len()), key_bits.as_mut_ptr())
+    };
+    if ret < 0 {
+        return false;
+    }
+
+    // Must support KEY_A(30)..KEY_Z(44+) and KEY_ENTER(28)
+    let required_keys = [
+        KEY_A, KEY_B, KEY_C, KEY_D, KEY_E, KEY_F, KEY_G, KEY_H, KEY_I,
+        KEY_J, KEY_K, KEY_L, KEY_M, KEY_N, KEY_O, KEY_P, KEY_Q, KEY_R,
+        KEY_S, KEY_T, KEY_U, KEY_V, KEY_W, KEY_X, KEY_Y, KEY_Z, KEY_ENTER,
+    ];
+
+    for &key in &required_keys {
+        if !bit_is_set(&key_bits, key) {
+            return false;
+        }
+    }
+
+    true
+}
+
+/// Get device name via EVIOCGNAME ioctl
+fn get_device_name(fd: sys::c_int) -> Option<String> {
+    let mut name_buf = [0u8; 256];
+    let ret = unsafe {
+        sys::ioctl(fd, eviocgname(name_buf.len()), name_buf.as_mut_ptr())
+    };
+    if ret > 0 {
+        let len = (ret as usize).min(name_buf.len());
+        // Find null terminator
+        let end = name_buf[..len].iter().position(|&b| b == 0).unwrap_or(len);
+        Some(String::from_utf8_lossy(&name_buf[..end]).to_string())
+    } else {
+        None
+    }
+}
+
 pub struct PhysicalKeyboard {
     file: Option<File>,
     mods: Modifiers,
 }
 
 impl PhysicalKeyboard {
+    /// Open a specific keyboard device by path.
+    pub fn open_path(path: &str) -> Self {
+        let file = match File::open(path) {
+            Ok(f) => {
+                eprintln!("Opened keyboard device: {}", path);
+                Some(f)
+            }
+            Err(e) => {
+                eprintln!("Warning: Cannot open keyboard device {}: {}", path, e);
+                None
+            }
+        };
+        PhysicalKeyboard {
+            file,
+            mods: Modifiers::default(),
+        }
+    }
+
+    /// Auto-discover a keyboard device.
+    /// 1. Try /dev/input/by-id/*kbd* or /dev/input/by-path/*kbd*
+    /// 2. Scan /dev/input/event* and probe with EVIOCGBIT for key capabilities
+    /// 3. Fall back to the old hardcoded order
     pub fn open() -> Self {
+        // Strategy 1: Try by-id and by-path symlinks containing "kbd"
+        for dir in &["/dev/input/by-id", "/dev/input/by-path"] {
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name();
+                    let name_str = name.to_string_lossy();
+                    if name_str.contains("kbd") || name_str.contains("keyboard") {
+                        let path = entry.path();
+                        if let Ok(f) = File::open(&path) {
+                            eprintln!("Opened keyboard device (by-id/path): {}", path.display());
+                            return PhysicalKeyboard {
+                                file: Some(f),
+                                mods: Modifiers::default(),
+                            };
+                        }
+                    }
+                }
+            }
+        }
+
+        // Strategy 2: Scan /dev/input/event* and probe capabilities
+        for i in 0..20 {
+            let path = format!("/dev/input/event{}", i);
+            if let Ok(f) = File::open(&path) {
+                let fd = f.as_raw_fd();
+                if is_keyboard_device(fd) {
+                    let name = get_device_name(fd).unwrap_or_default();
+                    eprintln!("Auto-detected keyboard: {} ({})", path, name);
+                    return PhysicalKeyboard {
+                        file: Some(f),
+                        mods: Modifiers::default(),
+                    };
+                }
+            }
+        }
+
+        // Strategy 3: Legacy fallback
         let paths = [
             "/dev/input/event3",
             "/dev/input/event4",
@@ -131,7 +261,7 @@ impl PhysicalKeyboard {
         let mut file = None;
         for path in &paths {
             if let Ok(f) = File::open(path) {
-                eprintln!("Opened keyboard device: {}", path);
+                eprintln!("Opened keyboard device (fallback): {}", path);
                 file = Some(f);
                 break;
             }

@@ -8,6 +8,7 @@ mod sys;
 mod terminal;
 
 use std::env;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use framebuffer::Framebuffer;
@@ -39,7 +40,11 @@ fn print_usage() {
     eprintln!("  --fb PATH       Framebuffer device (default: /dev/fb0)");
     eprintln!("  --shell CMD     Shell to run if no SSH target given (default: /bin/sh)");
     eprintln!("  --keyboard      Enable on-screen virtual keyboard");
+    eprintln!("  --kb PATH       Keyboard device path (e.g. /dev/input/event3)");
     eprintln!("  --ssh-cmd CMD   SSH client binary (default: ssh, fallback: dbclient)");
+    eprintln!("  --tmux          Auto-attach/create tmux session on remote host");
+    eprintln!("  --cmd STRING    Remote command to run via SSH");
+    eprintln!("  --ssh-args ARGS Extra arguments passed to SSH (comma-separated)");
     eprintln!("  --help          Show this help");
     eprintln!();
     eprintln!("EXAMPLES:");
@@ -47,6 +52,9 @@ fn print_usage() {
     eprintln!("  remarkable-ssh user@100.64.0.1       # Tailscale IP");
     eprintln!("  remarkable-ssh --shell /bin/bash      # Local shell");
     eprintln!("  remarkable-ssh --keyboard user@myhost # With on-screen keyboard");
+    eprintln!("  remarkable-ssh --tmux user@myhost     # Auto-attach to tmux");
+    eprintln!("  remarkable-ssh --cmd htop user@myhost # Run htop remotely");
+    eprintln!("  remarkable-ssh --kb /dev/input/event3 user@myhost");
 }
 
 struct Config {
@@ -56,6 +64,10 @@ struct Config {
     ssh_cmd: String,
     ssh_target: Option<String>,
     show_keyboard: bool,
+    kb_path: Option<String>,
+    tmux: bool,
+    remote_cmd: Option<String>,
+    ssh_extra_args: Vec<String>,
 }
 
 fn parse_args() -> Config {
@@ -67,6 +79,10 @@ fn parse_args() -> Config {
         ssh_cmd: "ssh".to_string(),
         ssh_target: None,
         show_keyboard: false,
+        kb_path: None,
+        tmux: false,
+        remote_cmd: None,
+        ssh_extra_args: Vec::new(),
     };
 
     let mut i = 1;
@@ -98,6 +114,32 @@ fn parse_args() -> Config {
             }
             "--keyboard" => {
                 config.show_keyboard = true;
+            }
+            "--kb" => {
+                i += 1;
+                if i < args.len() {
+                    config.kb_path = Some(args[i].clone());
+                }
+            }
+            "--tmux" => {
+                config.tmux = true;
+            }
+            "--cmd" => {
+                i += 1;
+                if i < args.len() {
+                    config.remote_cmd = Some(args[i].clone());
+                }
+            }
+            "--ssh-args" => {
+                i += 1;
+                if i < args.len() {
+                    for arg in args[i].split(',') {
+                        let trimmed = arg.trim();
+                        if !trimmed.is_empty() {
+                            config.ssh_extra_args.push(trimmed.to_string());
+                        }
+                    }
+                }
             }
             "--help" | "-h" => {
                 print_usage();
@@ -164,7 +206,7 @@ fn render_terminal(
             let px = col * char_w;
             let py = row * char_h;
 
-            let at_cursor = row == term.cursor_y && col == term.cursor_x;
+            let at_cursor = term.cursor_visible && row == term.cursor_y && col == term.cursor_x;
             let inverse = cell.inverse ^ at_cursor;
 
             fb.draw_char(cell.ch, px, py, scale, inverse);
@@ -195,6 +237,61 @@ fn render_status_bar(
     fb.draw_str(&status, 0, y, scale, true);
 }
 
+/// Global flag: set to true when we've stopped xochitl and need to restart it on exit.
+static XOCHITL_STOPPED: AtomicBool = AtomicBool::new(false);
+
+/// Restart xochitl using systemctl. Safe to call from signal/panic context.
+fn restart_xochitl() {
+    if XOCHITL_STOPPED.swap(false, Ordering::SeqCst) {
+        eprintln!("Restarting xochitl...");
+        let cmd = b"systemctl start xochitl\0";
+        unsafe {
+            sys::system(cmd.as_ptr() as *const sys::c_char);
+        }
+    }
+}
+
+/// Signal handler for SIGINT/SIGTERM — restarts xochitl then exits.
+extern "C" fn signal_handler(sig: sys::c_int) {
+    restart_xochitl();
+    // Re-raise with default handler to get proper exit status
+    unsafe {
+        sys::signal(sig, std::mem::transmute::<usize, sys::sighandler_t>(sys::SIG_DFL));
+        sys::kill(0, sig); // kill self
+    }
+}
+
+/// Stop xochitl so we can own the framebuffer. Installs safety hooks to restart it.
+fn stop_xochitl() {
+    // Check if xochitl is running
+    let cmd = b"systemctl is-active --quiet xochitl\0";
+    let ret = unsafe { sys::system(cmd.as_ptr() as *const sys::c_char) };
+    if ret != 0 {
+        eprintln!("xochitl is not running, skipping stop.");
+        return;
+    }
+
+    eprintln!("Stopping xochitl...");
+    let stop_cmd = b"systemctl stop xochitl\0";
+    unsafe {
+        sys::system(stop_cmd.as_ptr() as *const sys::c_char);
+    }
+    XOCHITL_STOPPED.store(true, Ordering::SeqCst);
+
+    // Install signal handlers
+    unsafe {
+        sys::signal(sys::SIGINT, signal_handler);
+        sys::signal(sys::SIGTERM, signal_handler);
+    }
+
+    // Install panic hook to restart xochitl
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        restart_xochitl();
+        default_hook(info);
+    }));
+}
+
 fn main() {
     let config = parse_args();
 
@@ -208,6 +305,9 @@ fn main() {
             std::process::exit(1);
         }
     };
+
+    // ---- Stop xochitl so we own the framebuffer ----
+    stop_xochitl();
 
     let scale = config.font_scale;
     let char_w = font::FONT_WIDTH * scale;
@@ -246,7 +346,11 @@ fn main() {
     };
 
     // ---- Open physical keyboard ----
-    let mut phys_kb = PhysicalKeyboard::open();
+    let mut phys_kb = if let Some(ref path) = config.kb_path {
+        PhysicalKeyboard::open_path(path)
+    } else {
+        PhysicalKeyboard::open()
+    };
 
     // ---- Open touch input ----
     let mut touch_input = Input::open(fb.width as i32, fb.height as i32).ok();
@@ -254,7 +358,29 @@ fn main() {
     // ---- Determine command to run ----
     let (command, args): (String, Vec<String>) = if let Some(ref target) = config.ssh_target {
         let ssh = find_ssh_cmd(&config.ssh_cmd);
-        (ssh.clone(), vec![ssh, target.clone()])
+        let mut argv = vec![ssh.clone()];
+
+        // Force PTY allocation for tmux or remote commands
+        if config.tmux || config.remote_cmd.is_some() {
+            argv.push("-tt".to_string());
+        }
+
+        // Extra SSH arguments
+        for arg in &config.ssh_extra_args {
+            argv.push(arg.clone());
+        }
+
+        // Target host
+        argv.push(target.clone());
+
+        // Remote command: --tmux takes precedence, then --cmd
+        if config.tmux {
+            argv.push("tmux attach || tmux new".to_string());
+        } else if let Some(ref cmd) = config.remote_cmd {
+            argv.push(cmd.clone());
+        }
+
+        (ssh, argv)
     } else {
         (config.shell.clone(), vec![config.shell.clone()])
     };
@@ -440,6 +566,9 @@ fn main() {
     fb.refresh_full();
 
     std::thread::sleep(std::time::Duration::from_secs(2));
+
+    // Restart xochitl if we stopped it
+    restart_xochitl();
 
     eprintln!("Exiting.");
 }
