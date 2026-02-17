@@ -8,7 +8,7 @@ pub type c_long = isize;
 pub type c_ulong = usize;
 pub type c_short = i16;
 pub type c_ushort = u16;
-pub type c_char = i8;
+pub type c_char = core::ffi::c_char;
 pub type c_void = core::ffi::c_void;
 pub type size_t = usize;
 pub type ssize_t = isize;
@@ -61,7 +61,14 @@ pub const FBIOGET_VSCREENINFO: c_ulong = 0x4600;
 pub const FBIOGET_FSCREENINFO: c_ulong = 0x4602;
 
 // MXCFB_SEND_UPDATE for e-ink refresh
+// V2: 72-byte struct (with dither_mode, quant_bit, alt_buffer_data)
 pub const MXCFB_SEND_UPDATE: c_ulong = 0x4048462E;
+// V1: 36-byte struct (older kernels / some RM2 firmware)
+pub const MXCFB_SEND_UPDATE_V1: c_ulong = 0x4024462E;
+// Auto-update mode: set to 1 to auto-refresh on fb writes
+pub const MXCFB_SET_AUTO_UPDATE_MODE: c_ulong = 0x4004462D;
+// Wait for a specific update to complete
+pub const MXCFB_WAIT_FOR_UPDATE_COMPLETE: c_ulong = 0x4004462F;
 
 // ---- Structures ----
 

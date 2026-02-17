@@ -1,3 +1,11 @@
+# Cross-compilation linker settings for reMarkable 2 (ARM Cortex-A7).
+#
+# If using `cross` (Docker-based): these are ignored (Docker provides the linker).
+# If using native cross-compilation: install the appropriate linker package.
+#
+# The musl target produces a fully static binary (no runtime deps).
+# The gnueabihf target links dynamically against glibc.
+
 [target.armv7-unknown-linux-musleabihf]
 linker = "arm-linux-musleabihf-gcc"
 
