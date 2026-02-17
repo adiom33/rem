@@ -70,6 +70,23 @@ pub const MXCFB_SET_AUTO_UPDATE_MODE: c_ulong = 0x4004462D;
 // Wait for a specific update to complete
 pub const MXCFB_WAIT_FOR_UPDATE_COMPLETE: c_ulong = 0x4004462F;
 
+// Sys V IPC (for rm2fb message queue)
+pub type key_t = c_int;
+pub const IPC_NOWAIT: c_int = 0o4000;
+
+// rm2fb message queue key
+pub const RM2FB_MSG_KEY: key_t = 0x2257c;
+
+// fstat
+pub type off_t = c_long;
+pub type dev_t = u64;
+pub type ino_t = c_ulong;
+pub type blksize_t = c_long;
+pub type blkcnt_t = c_long;
+
+// open flags
+pub const O_RDONLY: c_int = 0x00;
+
 // ---- Structures ----
 
 #[repr(C)]
@@ -152,6 +169,14 @@ extern "C" {
 
     // System command execution
     pub fn system(command: *const c_char) -> c_int;
+
+    // File info
+    pub fn fstat(fd: c_int, buf: *mut c_void) -> c_int;
+    pub fn ftruncate(fd: c_int, length: off_t) -> c_int;
+
+    // Sys V IPC (message queues — used for rm2fb)
+    pub fn msgget(key: key_t, msgflg: c_int) -> c_int;
+    pub fn msgsnd(msqid: c_int, msgp: *const c_void, msgsz: size_t, msgflg: c_int) -> c_int;
 }
 
 /// Get the last errno value.

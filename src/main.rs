@@ -314,7 +314,13 @@ fn main() {
     };
 
     // ---- Stop xochitl so we own the framebuffer ----
-    stop_xochitl();
+    // Skip if using rm2fb — the rm2fb server runs inside xochitl (or alongside it),
+    // so stopping xochitl would kill the display backend.
+    if fb.is_rm2fb() {
+        eprintln!("Using rm2fb backend — not stopping xochitl.");
+    } else {
+        stop_xochitl();
+    }
 
     let scale = config.font_scale;
     let char_w = font::FONT_WIDTH * scale;
@@ -589,14 +595,17 @@ fn main() {
     }
 
     // ---- Cleanup ----
-    fb.clear();
-    fb.draw_str("Session ended. Returning to xochitl...", 20, 20, scale, false);
-    fb.refresh_full();
-
-    std::thread::sleep(std::time::Duration::from_secs(2));
-
-    // Restart xochitl if we stopped it
-    restart_xochitl();
+    if fb.is_rm2fb() {
+        // With rm2fb, xochitl is still running — just clear our drawing
+        fb.clear();
+        fb.refresh_full();
+    } else {
+        fb.clear();
+        fb.draw_str("Session ended. Returning to xochitl...", 20, 20, scale, false);
+        fb.refresh_full();
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        restart_xochitl();
+    }
 
     eprintln!("Exiting.");
 }

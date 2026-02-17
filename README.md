@@ -231,63 +231,58 @@ at the bottom of the screen. Tap keys to type. Special keys include:
 ## Display Setup (rM2 Firmware Compatibility)
 
 The reMarkable 2 uses a software display controller (SWTCON) instead of a
-hardware EPDC. This means the app needs to tell the kernel to push pixels
-to the e-ink panel after drawing them.
+hardware EPDC. The app automatically detects the best way to update the screen:
 
-**On startup, the app probes your display driver** and logs what it finds:
+| Backend | How it works | When it's used |
+|---------|-------------|----------------|
+| **Native MXCFB** | Direct ioctl to `/dev/fb0` | RM1, or RM2 with working EPDC driver |
+| **rm2fb (auto)** | Shared memory + message queue | RM2 with rm2fb server running |
+| **None** | Screen won't update | Neither works — see below |
+
+**On startup, the app logs which backend it selected:**
 
 ```
-MXCFB_SEND_UPDATE probe: V2 ioctl works (72-byte struct)   ← good, native refresh works
+Display backend: native MXCFB V2 ioctl            ← direct driver, best case
+Display backend: rm2fb (native client, no LD_PRELOAD needed)   ← auto-detected rm2fb
+WARNING: No working display backend found!         ← need to set up rm2fb
 ```
 
-or:
+### rm2fb: automatic integration (no LD_PRELOAD needed)
 
-```
-WARNING: No working MXCFB_SEND_UPDATE ioctl found!         ← you need rm2fb
-```
+The app speaks the rm2fb protocol natively. If the rm2fb server is running,
+the app auto-detects its shared memory (`/dev/shm/swtfb.01`) and message
+queue, and uses them directly. **No `LD_PRELOAD` required on our side.**
 
-### If the screen stays blank: you need rm2fb
+You only need to get the rm2fb **server** running. The app handles the rest.
 
-On most RM2 firmware, direct framebuffer ioctls don't trigger screen updates.
-You need `rm2fb` to bridge between the framebuffer and the display.
-
-**Step 1: Get rm2fb for your firmware**
+**Step 1: Install the rm2fb server**
 
 Check the [remarkable2-framebuffer](https://github.com/ddvk/remarkable2-framebuffer)
-releases. You need a version that matches your firmware (check Settings > General
-> About on your tablet).
+releases for a version matching your firmware (Settings > General > About).
 
 ```bash
-# On your computer -- download the release matching your firmware
+# On your computer
 wget https://github.com/ddvk/remarkable2-framebuffer/releases/latest/download/rm2fb.tar.gz
 tar xzf rm2fb.tar.gz
 
-# Copy to reMarkable
+# Copy the SERVER library to the reMarkable (client .so is NOT needed)
 scp librm2fb_server.so.1.0.1 root@10.11.99.1:/opt/lib/
-scp librm2fb_client.so.1.0.1 root@10.11.99.1:/opt/lib/
-
-# On the reMarkable -- create symlinks
-ssh root@10.11.99.1
-mkdir -p /opt/lib
-cd /opt/lib
-ln -sf librm2fb_server.so.1.0.1 librm2fb_server.so.1
-ln -sf librm2fb_client.so.1.0.1 librm2fb_client.so.1
+ssh root@10.11.99.1 'mkdir -p /opt/lib && ln -sf librm2fb_server.so.1.0.1 /opt/lib/librm2fb_server.so.1'
 ```
 
-**Step 2: Run with rm2fb**
+**Step 2: Start xochitl with rm2fb server, then run the terminal**
 
 ```bash
-# Start xochitl with the rm2fb server loaded
+# Restart xochitl with the rm2fb server loaded
 systemctl stop xochitl
 LD_PRELOAD=/opt/lib/librm2fb_server.so.1 xochitl &
 
-# Run remarkable-ssh with the rm2fb client
-LD_PRELOAD=/opt/lib/librm2fb_client.so.1 /home/root/remarkable-ssh user@host
+# Just run — the app auto-detects rm2fb, no LD_PRELOAD needed
+/home/root/remarkable-ssh user@host
 ```
 
 **If rm2fb says "Missing address for function":** Your firmware version isn't
-supported yet. Check the rm2fb issues/wiki for your specific version, or try
-an older firmware.
+supported by that rm2fb release. Check the rm2fb issues/wiki for your version.
 
 ## What Works in the Terminal
 
@@ -328,9 +323,8 @@ If ghosting bothers you, press Ctrl+L to trigger a full redraw in most shells.
 | **Build fails: linker not found** | Install `cross` (`cargo install cross`) or `gcc-arm-linux-gnueabihf` (`sudo apt install gcc-arm-linux-gnueabihf`). The build script auto-detects available linkers. |
 | **Build fails: `c_char` type error** | Make sure you have the latest code. The `c_char` type was changed from `i8` to `core::ffi::c_char` to work correctly on ARM targets. |
 | **"Cannot open /dev/fb0"** | The app must run directly on the reMarkable, not over SSH in a normal terminal. Also make sure xochitl isn't holding the framebuffer -- the app stops it automatically, but if something went wrong, run `systemctl stop xochitl` first. |
-| **Screen stays blank / no refresh** | Check the startup log. If it says "No working MXCFB_SEND_UPDATE ioctl found", you need rm2fb. See [Display Setup](#display-setup-rm2-firmware-compatibility). |
-| **"MXCFB V2 probe failed: ENOTTY"** | Your kernel uses a different ioctl struct size. The app auto-tries V1 and V2. If both fail, you need rm2fb. |
-| **rm2fb: "Missing address for function"** | rm2fb doesn't support your firmware version. Check the rm2fb issues for your specific firmware. |
+| **Screen stays blank / no refresh** | Check the startup log. The app auto-detects native ioctls and rm2fb. If it says "No working display backend found", you need to install the rm2fb server. See [Display Setup](#display-setup-rm2-firmware-compatibility). |
+| **rm2fb: "Missing address for function"** | The rm2fb server doesn't support your firmware version. Check the rm2fb issues for your specific firmware. The app's native rm2fb client works fine — it's the server .so that needs firmware-specific addresses. |
 | **No keyboard input** | Make sure the Type Folio is connected. Try `--kb /dev/input/event3` (or event2, event4). Run `cat /proc/bus/input/devices` on the reMarkable to find the right device. |
 | **SSH connection refused** | Make sure the target server has SSH running and is reachable from the reMarkable's network. |
 | **"command not found: ssh"** | The reMarkable may only have `dbclient` (Dropbear SSH client). The app auto-detects this, but you can also use `--ssh-cmd dbclient`. |
