@@ -1,0 +1,445 @@
+mod font;
+mod framebuffer;
+mod input;
+mod keyboard;
+mod pty;
+#[allow(non_camel_case_types, dead_code)]
+mod sys;
+mod terminal;
+
+use std::env;
+use std::time::Instant;
+
+use framebuffer::Framebuffer;
+use input::Input;
+use keyboard::{OnScreenKeyboard, PhysicalKeyboard};
+use pty::Pty;
+use terminal::Terminal;
+
+/// Default font scale. 2x means 16x32 pixel characters.
+/// On the rM2's 1404x1872 display this gives ~87 columns x 58 rows (full screen)
+/// or ~87 cols x 37 rows with on-screen keyboard.
+const DEFAULT_FONT_SCALE: usize = 2;
+
+/// How many milliseconds to wait before refreshing the display after PTY output.
+/// Allows batching rapid output (e.g. scrolling) into a single refresh.
+const REFRESH_DEBOUNCE_MS: u64 = 50;
+
+/// Status bar height in font-rows
+const STATUS_BAR_ROWS: usize = 1;
+
+fn print_usage() {
+    eprintln!("remarkable-ssh - framebuffer terminal for reMarkable 2");
+    eprintln!();
+    eprintln!("USAGE:");
+    eprintln!("  remarkable-ssh [OPTIONS] [user@host]");
+    eprintln!();
+    eprintln!("OPTIONS:");
+    eprintln!("  --scale N       Font scale factor (default: 2)");
+    eprintln!("  --fb PATH       Framebuffer device (default: /dev/fb0)");
+    eprintln!("  --shell CMD     Shell to run if no SSH target given (default: /bin/sh)");
+    eprintln!("  --keyboard      Enable on-screen virtual keyboard");
+    eprintln!("  --ssh-cmd CMD   SSH client binary (default: ssh, fallback: dbclient)");
+    eprintln!("  --help          Show this help");
+    eprintln!();
+    eprintln!("EXAMPLES:");
+    eprintln!("  remarkable-ssh user@192.168.1.100");
+    eprintln!("  remarkable-ssh user@100.64.0.1       # Tailscale IP");
+    eprintln!("  remarkable-ssh --shell /bin/bash      # Local shell");
+    eprintln!("  remarkable-ssh --keyboard user@myhost # With on-screen keyboard");
+}
+
+struct Config {
+    font_scale: usize,
+    fb_path: String,
+    shell: String,
+    ssh_cmd: String,
+    ssh_target: Option<String>,
+    show_keyboard: bool,
+}
+
+fn parse_args() -> Config {
+    let args: Vec<String> = env::args().collect();
+    let mut config = Config {
+        font_scale: DEFAULT_FONT_SCALE,
+        fb_path: "/dev/fb0".to_string(),
+        shell: "/bin/sh".to_string(),
+        ssh_cmd: "ssh".to_string(),
+        ssh_target: None,
+        show_keyboard: false,
+    };
+
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--scale" => {
+                i += 1;
+                if i < args.len() {
+                    config.font_scale = args[i].parse().unwrap_or(DEFAULT_FONT_SCALE);
+                }
+            }
+            "--fb" => {
+                i += 1;
+                if i < args.len() {
+                    config.fb_path = args[i].clone();
+                }
+            }
+            "--shell" => {
+                i += 1;
+                if i < args.len() {
+                    config.shell = args[i].clone();
+                }
+            }
+            "--ssh-cmd" => {
+                i += 1;
+                if i < args.len() {
+                    config.ssh_cmd = args[i].clone();
+                }
+            }
+            "--keyboard" => {
+                config.show_keyboard = true;
+            }
+            "--help" | "-h" => {
+                print_usage();
+                std::process::exit(0);
+            }
+            arg => {
+                if arg.starts_with('-') {
+                    eprintln!("Unknown option: {}", arg);
+                    print_usage();
+                    std::process::exit(1);
+                }
+                config.ssh_target = Some(arg.to_string());
+            }
+        }
+        i += 1;
+    }
+
+    config
+}
+
+fn find_ssh_cmd(preferred: &str) -> String {
+    if command_exists(preferred) {
+        return preferred.to_string();
+    }
+    for cmd in &["ssh", "dbclient", "/usr/bin/ssh", "/usr/bin/dbclient"] {
+        if command_exists(cmd) {
+            eprintln!("Using SSH client: {}", cmd);
+            return cmd.to_string();
+        }
+    }
+    "ssh".to_string()
+}
+
+fn command_exists(cmd: &str) -> bool {
+    if cmd.starts_with('/') {
+        std::path::Path::new(cmd).exists()
+    } else {
+        if let Ok(path) = env::var("PATH") {
+            for dir in path.split(':') {
+                if std::path::Path::new(dir).join(cmd).exists() {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+}
+
+fn render_terminal(
+    fb: &mut Framebuffer,
+    term: &Terminal,
+    scale: usize,
+    _offset_y: usize,
+) {
+    let char_w = font::FONT_WIDTH * scale;
+    let char_h = font::FONT_HEIGHT * scale;
+
+    for row in 0..term.rows {
+        for col in 0..term.cols {
+            let cell = &term.grid[row][col];
+            if !cell.dirty {
+                continue;
+            }
+            let px = col * char_w;
+            let py = row * char_h;
+
+            let at_cursor = row == term.cursor_y && col == term.cursor_x;
+            let inverse = cell.inverse ^ at_cursor;
+
+            fb.draw_char(cell.ch, px, py, scale, inverse);
+        }
+    }
+}
+
+fn render_status_bar(
+    fb: &mut Framebuffer,
+    term: &Terminal,
+    scale: usize,
+    y: usize,
+    target: &str,
+) {
+    let char_h = font::FONT_HEIGHT * scale;
+    let bar_w = fb.width;
+
+    fb.fill_rect(0, y, bar_w, char_h, false);
+
+    let status = format!(
+        " {} | {}x{} | Ln {} Col {} ",
+        target,
+        term.cols,
+        term.rows,
+        term.cursor_y + 1,
+        term.cursor_x + 1,
+    );
+    fb.draw_str(&status, 0, y, scale, true);
+}
+
+fn main() {
+    let config = parse_args();
+
+    // ---- Open framebuffer ----
+    let mut fb = match Framebuffer::open(&config.fb_path) {
+        Ok(fb) => fb,
+        Err(e) => {
+            eprintln!("ERROR: {}", e);
+            eprintln!("Make sure you are running on a reMarkable tablet,");
+            eprintln!("or specify a framebuffer device with --fb.");
+            std::process::exit(1);
+        }
+    };
+
+    let scale = config.font_scale;
+    let char_w = font::FONT_WIDTH * scale;
+    let char_h = font::FONT_HEIGHT * scale;
+
+    // ---- Calculate terminal dimensions ----
+    let kb_height = if config.show_keyboard {
+        (fb.height / 3).max(char_h * 5)
+    } else {
+        0
+    };
+
+    let status_bar_height = char_h * STATUS_BAR_ROWS;
+    let term_area_height = fb.height - kb_height - status_bar_height;
+    let term_cols = fb.width / char_w;
+    let term_rows = term_area_height / char_h;
+
+    eprintln!(
+        "Terminal: {}x{} chars (scale {}x, {}x{} pixels per char)",
+        term_cols, term_rows, scale, char_w, char_h,
+    );
+
+    // ---- Create terminal emulator ----
+    let mut term = Terminal::new(term_cols, term_rows);
+
+    // ---- Create on-screen keyboard (optional) ----
+    let mut osk = if config.show_keyboard {
+        Some(OnScreenKeyboard::new(
+            0,
+            fb.height - kb_height,
+            fb.width,
+            kb_height,
+        ))
+    } else {
+        None
+    };
+
+    // ---- Open physical keyboard ----
+    let mut phys_kb = PhysicalKeyboard::open();
+
+    // ---- Open touch input ----
+    let mut touch_input = Input::open(fb.width as i32, fb.height as i32).ok();
+
+    // ---- Determine command to run ----
+    let (command, args): (String, Vec<String>) = if let Some(ref target) = config.ssh_target {
+        let ssh = find_ssh_cmd(&config.ssh_cmd);
+        (ssh.clone(), vec![ssh, target.clone()])
+    } else {
+        (config.shell.clone(), vec![config.shell.clone()])
+    };
+
+    let display_target = config
+        .ssh_target
+        .as_deref()
+        .unwrap_or("local shell");
+
+    // ---- Spawn PTY with child process ----
+    let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let pty = match Pty::spawn(term_cols as u16, term_rows as u16, &command, &args_refs, "xterm") {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("ERROR: Failed to spawn {}: {}", command, e);
+            eprintln!("If SSH is not found, try: --ssh-cmd /path/to/ssh");
+            std::process::exit(1);
+        }
+    };
+
+    // ---- Initial render ----
+    fb.clear();
+
+    let welcome = format!("remarkable-ssh | Connecting to: {}", display_target);
+    term.process(welcome.as_bytes());
+    term.process(b"\r\n");
+
+    render_terminal(&mut fb, &term, scale, 0);
+    render_status_bar(&mut fb, &term, scale, term_area_height, display_target);
+
+    if let Some(ref osk) = osk {
+        osk.render(&mut fb, scale);
+    }
+
+    fb.refresh_full();
+
+    // ---- Build pollfd array ----
+    let mut poll_fds: Vec<sys::pollfd> = Vec::new();
+
+    // Index 0: PTY master
+    poll_fds.push(sys::pollfd {
+        fd: pty.master_fd,
+        events: sys::POLLIN,
+        revents: 0,
+    });
+
+    // Index 1: physical keyboard (if available)
+    let kb_poll_idx = if let Some(fd) = phys_kb.fd() {
+        poll_fds.push(sys::pollfd {
+            fd,
+            events: sys::POLLIN,
+            revents: 0,
+        });
+        Some(poll_fds.len() - 1)
+    } else {
+        None
+    };
+
+    // Index 2+: touch input devices
+    let touch_poll_start = poll_fds.len();
+    if let Some(ref ti) = touch_input {
+        for fd in ti.fds() {
+            poll_fds.push(sys::pollfd {
+                fd,
+                events: sys::POLLIN,
+                revents: 0,
+            });
+        }
+    }
+
+    // ---- Main event loop ----
+    let mut last_refresh = Instant::now();
+    let mut needs_refresh = false;
+
+    eprintln!("Entering main loop...");
+
+    loop {
+        if !pty.is_alive() {
+            eprintln!("Child process exited.");
+            break;
+        }
+
+        for pfd in &mut poll_fds {
+            pfd.revents = 0;
+        }
+
+        let timeout_ms = if needs_refresh {
+            REFRESH_DEBOUNCE_MS as sys::c_int
+        } else {
+            1000
+        };
+
+        let ret = unsafe {
+            sys::poll(
+                poll_fds.as_mut_ptr(),
+                poll_fds.len() as sys::nfds_t,
+                timeout_ms,
+            )
+        };
+
+        if ret < 0 {
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            eprintln!("poll error: {}", err);
+            break;
+        }
+
+        // ---- Handle PTY output ----
+        if poll_fds[0].revents & sys::POLLIN != 0 {
+            let data = pty.read();
+            if !data.is_empty() {
+                term.process(&data);
+                needs_refresh = true;
+            }
+        }
+        if poll_fds[0].revents & sys::POLLHUP != 0 {
+            eprintln!("PTY closed.");
+            break;
+        }
+
+        // ---- Handle physical keyboard input ----
+        if let Some(idx) = kb_poll_idx {
+            if poll_fds[idx].revents & sys::POLLIN != 0 {
+                let key_events = phys_kb.read_keys(term.app_cursor_keys);
+                for keys in key_events {
+                    if let Err(e) = pty.write(&keys) {
+                        eprintln!("Write to PTY failed: {}", e);
+                    }
+                }
+            }
+        }
+
+        // ---- Handle touch input ----
+        if let Some(ref mut ti) = touch_input {
+            for i in touch_poll_start..poll_fds.len() {
+                if poll_fds[i].revents & sys::POLLIN != 0 {
+                    let fd_index = i - touch_poll_start;
+                    let touches = ti.read_events(fd_index);
+                    for touch in touches {
+                        if let Some(ref mut osk) = osk {
+                            if touch.y >= osk.origin_y as i32 {
+                                if let Some(bytes) = osk.handle_touch(touch.x, touch.y) {
+                                    if let Err(e) = pty.write(&bytes) {
+                                        eprintln!("Write to PTY failed: {}", e);
+                                    }
+                                }
+                                osk.render(&mut fb, scale);
+                                let kb_y = osk.origin_y as u32;
+                                fb.refresh_fast(
+                                    0,
+                                    kb_y,
+                                    fb.width as u32,
+                                    osk.total_height as u32,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ---- Refresh display if needed ----
+        if needs_refresh {
+            let elapsed = last_refresh.elapsed().as_millis() as u64;
+            if elapsed >= REFRESH_DEBOUNCE_MS || ret == 0 {
+                render_terminal(&mut fb, &term, scale, 0);
+                render_status_bar(&mut fb, &term, scale, term_area_height, display_target);
+                term.mark_clean();
+
+                fb.refresh_terminal(term_area_height as u32 + status_bar_height as u32);
+
+                last_refresh = Instant::now();
+                needs_refresh = false;
+            }
+        }
+    }
+
+    // ---- Cleanup ----
+    fb.clear();
+    fb.draw_str("Session ended. Returning to xochitl...", 20, 20, scale, false);
+    fb.refresh_full();
+
+    std::thread::sleep(std::time::Duration::from_secs(2));
+
+    eprintln!("Exiting.");
+}

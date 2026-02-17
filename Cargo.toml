@@ -1,0 +1,15 @@
+[package]
+name = "remarkable-ssh"
+version = "0.1.0"
+edition = "2021"
+description = "A framebuffer-based SSH terminal for the reMarkable 2 tablet"
+license = "MIT"
+
+# Zero external dependencies - all libc bindings are inline.
+[dependencies]
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+panic = "abort"
