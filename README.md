@@ -1,224 +1,324 @@
 # remarkable-ssh
 
-A framebuffer-based SSH terminal for the **reMarkable 2** tablet.
+A terminal app for the **reMarkable 2** tablet that lets you SSH into another computer.
 
-Turns your reMarkable 2 into a distraction-free SSH thin client, connecting over
-Tailscale (or any network) to your home server — while still functioning as an
-e-book reader when you're done.
+Think of it as turning your reMarkable into a portable, distraction-free terminal
+that connects to your server, home computer, or cloud machine. When you're done,
+your reMarkable goes right back to being an e-reader.
 
-## What This Does
+## What You Need
 
-- Opens the e-ink framebuffer directly (`/dev/fb0`)
-- Renders a VT100-compatible terminal with an embedded bitmap font
-- Reads input from the **Type Folio physical keyboard** (evdev)
-- Optionally shows an on-screen virtual keyboard (for touch-only use)
-- Spawns SSH (or a local shell) via a PTY
-- Uses fast partial e-ink refreshes for responsive typing
-- Ships as a **single static binary** with zero dependencies
+**Three things:**
 
-## Architecture
+1. **A reMarkable 2 tablet** (with optional Type Folio keyboard, or use the on-screen keyboard)
+2. **A computer to build and copy the app** (Linux, Mac, or Windows with WSL)
+3. **A machine to SSH into** (your home server, a VPS, a Raspberry Pi, etc.)
+
+## How It Works
+
+Your reMarkable connects to the target machine over SSH (the same way you'd
+connect from a regular terminal). The app draws directly to the e-ink screen
+and reads your keypresses, so no special display server or desktop environment
+is needed.
 
 ```
-┌─────────────────────────────────────────┐
-│  reMarkable 2                           │
-│                                         │
-│  ┌──────────┐   ┌──────────────────┐    │
-│  │ Type     │──>│ remarkable-ssh    │    │       ┌──────────────┐
-│  │ Folio KB │   │                  │    │       │ Home Server  │
-│  └──────────┘   │  evdev ──> PTY ──────────────>│              │
-│                 │  VT100 <── PTY <──────────────│  (Tailscale) │
-│  ┌──────────┐   │            │      │    │       │  100.64.x.x  │
-│  │ e-ink    │<──│  framebuffer      │    │       └──────────────┘
-│  │ display  │   │  /dev/fb0  │      │    │
-│  └──────────┘   └──────────────────┘    │
-│                                         │
-│  Tailscale NOT needed on reMarkable.    │
-│  Just SSH to the Tailscale IP.          │
-└─────────────────────────────────────────┘
+reMarkable 2                          Your Server
++------------------+                  +--------------+
+| Type Folio KB    |    SSH over      |              |
+| or on-screen KB  |----- WiFi ------>| bash, tmux,  |
+|                  |                  | vim, htop... |
+| e-ink display    |<----- WiFi -----|              |
+| (terminal view)  |                  +--------------+
++------------------+
 ```
 
-## Prerequisites
+The app automatically stops the normal reMarkable UI (called "xochitl") when it
+starts, and **restarts it when you exit** -- even if the app crashes or you
+press Ctrl+C. You will not get stuck with a blank screen.
 
-**On your development machine:**
-- Rust toolchain: https://rustup.rs/
-- One of:
-  - `cross` (recommended): `cargo install cross` (requires Docker)
-  - ARM cross-compiler: `apt install gcc-arm-linux-gnueabihf musl-tools`
+## Step-by-Step Setup
 
-**On the reMarkable 2:**
-- SSH access enabled (Settings > General > Help > Copyrights and licenses → password shown)
-- For rM2 display: `rm2fb` shim (see [Display Setup](#display-setup-rm2))
+### Step 1: Find Your reMarkable's Password
 
-**On your home server:**
-- Tailscale running (the reMarkable does NOT need Tailscale)
-- SSH server running
+On your reMarkable tablet:
 
-## Quick Start
+1. Tap **Settings** (gear icon)
+2. Tap **General**
+3. Tap **Help**
+4. Tap **Copyrights and licenses**
+5. At the bottom, you'll see your **root password** and **IP address**
+
+Write down the password. You'll need it to copy files to the tablet.
+
+### Step 2: Connect Your reMarkable to Your Computer
+
+Plug the reMarkable into your computer with the USB-C cable. This creates
+a direct network connection with the IP address `10.11.99.1`.
+
+To verify it works, open a terminal on your computer and run:
 
 ```bash
-# 1. Clone this repo
-git clone <this-repo> && cd rem
-
-# 2. Build for reMarkable (ARM static binary)
-./scripts/build.sh
-
-# 3. Deploy to reMarkable via USB
-./scripts/deploy.sh 10.11.99.1
-
-# 4. SSH into reMarkable and run
 ssh root@10.11.99.1
-systemctl stop xochitl
-/home/root/remarkable-ssh user@100.64.0.1    # your Tailscale IP
-systemctl start xochitl                      # when done
+# Enter the password from Step 1 when prompted
+# Type 'exit' to disconnect
 ```
 
-Or use the all-in-one script:
+### Step 3: Build the App
+
+On your computer (not the reMarkable), you need Rust installed.
+If you don't have it:
+
 ```bash
-./scripts/run-remote.sh 10.11.99.1 user@100.64.0.1
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
+
+Then clone this repository and build:
+
+```bash
+# Get the code
+git clone <this-repo>
+cd rem
+
+# Install the ARM cross-compilation target
+rustup target add armv7-unknown-linux-musleabihf
+
+# Build (this creates a single static binary that runs on the reMarkable)
+./scripts/build.sh
+```
+
+**If the build fails** with a linker error, you need an ARM cross-compiler:
+- **Ubuntu/Debian:** `sudo apt install gcc-arm-linux-gnueabihf musl-tools`
+- **Mac:** Install [musl-cross](https://github.com/nicklockwood/musl-cross) via Homebrew
+- **Easier alternative:** Install `cross` which uses Docker: `cargo install cross`
+
+### Step 4: Copy the App to Your reMarkable
+
+With your reMarkable plugged in via USB:
+
+```bash
+./scripts/deploy.sh 10.11.99.1
+# Enter your reMarkable password when prompted
+```
+
+This copies the compiled binary to `/home/root/remarkable-ssh` on the tablet.
+
+### Step 5: Run It
+
+**Option A: One command from your computer (easiest)**
+
+```bash
+./scripts/run-remote.sh 10.11.99.1 user@your-server-ip
+```
+
+This SSHes into the reMarkable, stops xochitl, runs the terminal, and restarts
+xochitl when you're done. Everything is automatic.
+
+**Option B: Run it manually on the reMarkable**
+
+```bash
+# SSH into your reMarkable
+ssh root@10.11.99.1
+
+# Run the terminal app (it stops/restarts xochitl automatically)
+/home/root/remarkable-ssh user@your-server-ip
+```
+
+When you exit the SSH session (type `exit` or press Ctrl+D), the app
+cleans up and restarts the normal reMarkable UI automatically.
 
 ## Usage
 
 ```
 remarkable-ssh [OPTIONS] [user@host]
-
-OPTIONS:
-  --scale N       Font scale factor (default: 2, gives 16x32 pixel chars)
-  --fb PATH       Framebuffer device (default: /dev/fb0)
-  --shell CMD     Shell to run if no SSH target (default: /bin/sh)
-  --keyboard      Enable on-screen virtual keyboard
-  --ssh-cmd CMD   SSH client binary (default: ssh, fallback: dbclient)
-  --help          Show help
-
-EXAMPLES:
-  remarkable-ssh user@192.168.1.100         # SSH via local network
-  remarkable-ssh user@100.64.0.1            # SSH via Tailscale
-  remarkable-ssh --keyboard user@myhost     # With on-screen keyboard
-  remarkable-ssh --shell /bin/bash          # Local shell (no SSH)
-  remarkable-ssh --scale 3 user@host        # Larger font
 ```
 
-## Display Setup (rM2)
-
-The reMarkable 2 doesn't expose a traditional framebuffer — the display is driven
-by a software controller (SWTCON). You need the `rm2fb` shim to make `/dev/fb0` work.
-
-### Installing rm2fb manually (no Toltec needed)
+### Common Examples
 
 ```bash
-# On your development machine, download the rm2fb release:
+# Basic SSH connection
+remarkable-ssh user@192.168.1.100
+
+# SSH with the on-screen keyboard (no Type Folio needed)
+remarkable-ssh --keyboard user@myhost
+
+# SSH and auto-attach to a tmux session (great for persistent sessions)
+remarkable-ssh --tmux user@myhost
+
+# Run a specific command on the remote machine
+remarkable-ssh --cmd htop user@myhost
+
+# Use a specific SSH key
+remarkable-ssh --ssh-arg -i --ssh-arg /path/to/key user@myhost
+
+# Just a local shell (no SSH, for testing on the device)
+remarkable-ssh --shell /bin/sh
+
+# Larger font (if you prefer bigger text)
+remarkable-ssh --scale 3 user@myhost
+```
+
+### All Options
+
+| Option | Description |
+|--------|-------------|
+| `--keyboard` | Show an on-screen virtual keyboard (for use without Type Folio) |
+| `--kb PATH` | Use a specific keyboard device (e.g. `/dev/input/event3`) |
+| `--tmux` | Auto-attach to a tmux session on the remote machine |
+| `--cmd STRING` | Run a specific command remotely instead of a shell |
+| `--scale N` | Font scale factor (default: 2, which gives 16x32 pixel characters) |
+| `--fb PATH` | Framebuffer device path (default: `/dev/fb0`) |
+| `--shell CMD` | Shell to use when no SSH target is given (default: `/bin/sh`) |
+| `--ssh-cmd CMD` | SSH binary to use (default: `ssh`, falls back to `dbclient`) |
+| `--ssh-arg ARG` | Extra argument to pass to SSH (repeatable) |
+| `--ssh-args ARGS` | Extra arguments for SSH, comma-separated |
+| `--help` | Show help |
+
+### About `--tmux`
+
+[tmux](https://github.com/tmux/tmux) is a "terminal multiplexer" that keeps
+your session alive even if you disconnect. This is perfect for the reMarkable
+because you can:
+
+1. Start a session: `remarkable-ssh --tmux user@server`
+2. Do some work, then exit
+3. Come back later and your session is exactly where you left it
+
+The `--tmux` flag automatically runs `tmux attach || tmux new -s main` on the
+remote machine, so it reconnects to an existing session or creates a new one.
+
+## Keyboard Support
+
+### Type Folio (Physical Keyboard)
+
+The Type Folio keyboard works automatically. The app auto-detects it by
+scanning input devices. If auto-detection picks the wrong device, specify
+it manually:
+
+```bash
+# Find your keyboard device
+cat /proc/bus/input/devices   # look for "Type Folio" or similar
+
+# Specify it
+remarkable-ssh --kb /dev/input/event3 user@host
+```
+
+**Supported keys:** All letters, numbers, symbols, arrow keys, Home, End,
+Page Up/Down, F1-F12, Tab, Escape, Backspace, Delete, plus all Ctrl and
+Alt combinations.
+
+### On-Screen Keyboard
+
+If you don't have a Type Folio, use `--keyboard` to get a virtual keyboard
+at the bottom of the screen. Tap keys to type. Special keys include:
+
+- **SH** = Shift (tap once, then a letter)
+- **CT** = Ctrl (tap once, then a letter -- e.g. CT then C = Ctrl+C)
+- **ES** = Escape
+- **TB** = Tab
+- **EN** = Enter
+- **BS** = Backspace
+
+## Display Setup (rM2 Firmware Compatibility)
+
+The reMarkable 2 uses a software display controller. Depending on your firmware
+version, you may need `rm2fb` to make the framebuffer work.
+
+**How to tell if you need it:** If the app runs but the screen stays blank or
+doesn't update, you need rm2fb.
+
+### Installing rm2fb
+
+```bash
+# On your computer -- download the latest release
 wget https://github.com/ddvk/remarkable2-framebuffer/releases/latest/download/rm2fb.tar.gz
 tar xzf rm2fb.tar.gz
 
-# Copy to reMarkable:
+# Copy to reMarkable
 scp librm2fb_server.so.1.0.1 root@10.11.99.1:/opt/lib/
 scp librm2fb_client.so.1.0.1 root@10.11.99.1:/opt/lib/
 
-# On the reMarkable:
+# On the reMarkable -- create symlinks
 ssh root@10.11.99.1
 cd /opt/lib
 ln -s librm2fb_server.so.1.0.1 librm2fb_server.so.1
 ln -s librm2fb_client.so.1.0.1 librm2fb_client.so.1
 
-# Run remarkable-ssh with rm2fb:
-systemctl stop xochitl
+# Run remarkable-ssh with rm2fb
 LD_PRELOAD=/opt/lib/librm2fb_client.so.1 /home/root/remarkable-ssh user@host
-systemctl start xochitl
 ```
 
-If rm2fb is not available for your firmware version, check the
-[remarkable2-framebuffer](https://github.com/ddvk/remarkable2-framebuffer) repo
-for alternatives.
+If rm2fb is not available for your firmware, check the
+[remarkable2-framebuffer](https://github.com/ddvk/remarkable2-framebuffer) repo.
 
-## Keyboard Support
+## What Works in the Terminal
 
-### Type Folio (physical keyboard)
-The Type Folio keyboard is supported out of the box. It sends standard Linux
-key events which are mapped to terminal sequences:
+The built-in terminal emulator is compatible with most command-line programs:
 
-- All letters, numbers, symbols
-- Arrow keys, Home, End, Page Up/Down
-- F1-F12
-- Ctrl+C, Ctrl+D, Ctrl+Z, Ctrl+L (all Ctrl combos)
-- Alt+key (sends ESC prefix)
-- Tab, Escape, Backspace, Delete
+- **Shells**: bash, zsh, sh, fish
+- **Editors**: vim, nano, micro
+- **Multiplexers**: tmux, screen (with full alternate-screen support)
+- **System tools**: htop, top, less, man, journalctl
+- **General**: git, make, python, node, and most CLI tools
 
-### On-Screen Keyboard
-Enable with `--keyboard` flag. Tap keys on the touchscreen.
-Includes Shift, Ctrl, and all terminal-essential keys.
+**Terminal features supported:**
+- Cursor movement and positioning
+- Screen and line clearing
+- Scroll regions
+- Inverse video (used for status bars, selections, etc.)
+- Alternate screen buffer (so vim/tmux/less switch cleanly)
+- Cursor show/hide
+- Application cursor keys (arrow keys in vim, etc.)
+- UTF-8 output (non-ASCII characters display as `?` -- the font is ASCII-only)
 
-## Terminal Capabilities
+## E-Ink Tips
 
-The built-in terminal emulator supports:
+E-ink displays refresh differently from normal screens:
 
-- **Cursor movement**: up/down/left/right, absolute positioning
-- **Erase**: clear screen, clear line, clear to end/beginning
-- **Scrolling**: scroll regions, insert/delete lines
-- **Text attributes**: bold (rendered normal), inverse video
-- **Application cursor keys** (for vim, less, etc.)
-- **Line wrapping**
-- **Tab stops** (every 8 columns)
-- **TERM=xterm** (good compatibility with most servers)
+- **Typing and cursor movement** use fast partial refreshes (minimal flicker)
+- **Every 20 updates**, a full refresh clears any ghosting (brief full-screen flash)
+- **Fast scrolling** is batched -- the display waits 50ms for output to settle
+  before refreshing, so scrolling doesn't flash once per line
+- **Only the changed region** is refreshed, not the whole screen
 
-This is enough for: bash, zsh, vim, nano, less, htop, tmux, screen, and most
-CLI tools.
+If ghosting bothers you, press Ctrl+L to trigger a full redraw in most shells.
 
-## E-Ink Refresh Strategy
+## Troubleshooting
 
-E-ink displays are slow. This app uses:
-
-- **DU waveform** for fast partial updates (typing, cursor movement)
-- **GC16 waveform** for periodic full refreshes (clears ghosting)
-- **Debounced refreshes**: waits 50ms after output stops before refreshing,
-  so rapid scrolling doesn't trigger individual refreshes per line
-
-## Returning to Normal reMarkable Use
-
-The reMarkable's normal UI (xochitl) is stopped while the terminal runs.
-When you exit (or the SSH session ends), restart it:
-
-```bash
-systemctl start xochitl
-```
-
-The `run-remote.sh` script does this automatically.
+| Problem | Solution |
+|---------|----------|
+| **"Cannot open /dev/fb0"** | The app must run directly on the reMarkable, not over SSH in a normal terminal. Also make sure xochitl isn't holding the framebuffer -- the app stops it automatically, but if something went wrong, run `systemctl stop xochitl` first. |
+| **Screen stays blank** | You likely need rm2fb. See [Display Setup](#display-setup-rm2-firmware-compatibility). |
+| **No keyboard input** | Make sure the Type Folio is connected. Try `--kb /dev/input/event3` (or event2, event4). Run `cat /proc/bus/input/devices` on the reMarkable to find the right device. |
+| **SSH connection refused** | Make sure the target server has SSH running and is reachable from the reMarkable's network. |
+| **"command not found: ssh"** | The reMarkable may only have `dbclient` (Dropbear SSH client). The app auto-detects this, but you can also use `--ssh-cmd dbclient`. |
+| **Stuck on blank screen** | The app should restart xochitl automatically. If it didn't, SSH into your reMarkable and run `systemctl start xochitl`. |
+| **Characters show as `?`** | The built-in font only covers ASCII (English letters, numbers, symbols). Non-ASCII characters (accented letters, emoji, CJK) show as `?`. |
 
 ## Project Structure
 
 ```
-├── Cargo.toml              # Rust project config
-├── .cargo/config.toml      # Cross-compilation settings
-├── src/
-│   ├── main.rs             # Entry point, event loop, rendering
-│   ├── framebuffer.rs      # /dev/fb0 mmap, pixel drawing, e-ink refresh
-│   ├── font.rs             # Embedded 8x16 bitmap font (VGA style)
-│   ├── input.rs            # evdev touch/pen input handling
-│   ├── keyboard.rs         # Type Folio + on-screen keyboard
-│   ├── terminal.rs         # VT100 escape sequence parser + grid
-│   └── pty.rs              # PTY management, child process spawning
-├── scripts/
-│   ├── build.sh            # Cross-compile for ARM
-│   ├── deploy.sh           # SCP binary to reMarkable
-│   └── run-remote.sh       # Build + deploy + run (all-in-one)
-└── README.md
+rem/
+  Cargo.toml              # Rust project configuration (zero dependencies)
+  .cargo/config.toml      # Cross-compilation linker settings
+  src/
+    main.rs               # Entry point, event loop, display refresh
+    framebuffer.rs         # Draws to the e-ink screen via /dev/fb0
+    font.rs               # Built-in 8x16 pixel bitmap font (95 ASCII glyphs)
+    terminal.rs           # VT100/xterm escape sequence parser
+    keyboard.rs           # Physical keyboard + on-screen keyboard
+    input.rs              # Touchscreen and pen input handling
+    pty.rs                # Pseudo-terminal (PTY) and child process management
+    sys.rs                # Raw Linux syscall bindings (replaces libc crate)
+  scripts/
+    build.sh              # Cross-compile for ARM (reMarkable hardware)
+    deploy.sh             # Copy binary to reMarkable via USB
+    run-remote.sh         # Build + deploy + run, all in one command
 ```
 
-## Troubleshooting
-
-**"Cannot open /dev/fb0"**: Make sure xochitl is stopped (`systemctl stop xochitl`).
-
-**Display not updating (rM2)**: You need rm2fb. See [Display Setup](#display-setup-rm2).
-
-**No keyboard input**: Check that the Type Folio is connected. The app tries
-`/dev/input/event0` through `event5`. If your keyboard is on a different device,
-check `cat /proc/bus/input/devices` on the reMarkable.
-
-**SSH connection refused**: Make sure the target server has SSH running and is
-reachable. If using Tailscale, verify the Tailscale IP on the server with
-`tailscale ip -4`.
-
-**"command not found: ssh"**: The reMarkable may only have `dbclient` (dropbear
-SSH client). Use `--ssh-cmd dbclient` or just let it auto-detect.
+The entire app is a single Rust binary with **zero external dependencies**.
+All system calls are made directly through inline bindings in `sys.rs`, and
+the binary is statically linked via musl, so it runs on any reMarkable 2
+without installing anything else.
 
 ## License
 
