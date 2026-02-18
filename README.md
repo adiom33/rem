@@ -38,7 +38,23 @@ The app automatically handles the reMarkable UI (called "xochitl"):
 - **With rm2fb:** Leaves xochitl running (the rm2fb server needs it). See
   [Display Setup](#display-setup-rm2-firmware-compatibility) if your screen stays blank.
 
-## Step-by-Step Setup
+## Quick Start
+
+If you have Rust and Docker installed, this is the whole thing:
+
+```bash
+git clone https://github.com/adiom33/rem.git
+cd rem
+cargo install cross                       # Docker-based ARM cross-compiler
+./scripts/run-remote.sh 10.11.99.1 user@your-server-ip
+```
+
+That single script builds, copies to the tablet, and runs it. When you exit,
+the reMarkable UI comes back automatically.
+
+First time? Read on for the detailed setup.
+
+## Detailed Setup
 
 ### Step 1: Find Your reMarkable's Password
 
@@ -65,78 +81,61 @@ ssh root@10.11.99.1
 # Type 'exit' to disconnect
 ```
 
-### Step 3: Build the App
+### Step 3: Install Rust and Build
 
-On your computer (not the reMarkable), you need Rust installed.
-If you don't have it:
+You need two things on your computer: **Rust** and **`cross`** (a Docker-based
+ARM cross-compiler). This is a one-time setup.
 
 ```bash
+# Install Rust (if you don't have it)
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source ~/.cargo/env
+
+# Install cross (uses Docker — handles all ARM toolchain stuff for you)
+cargo install cross
 ```
 
-Then clone this repository and build:
+> **Don't have Docker?** You can also build without it:
+> - Ubuntu/Debian: `sudo apt install gcc-arm-linux-gnueabihf`
+> - Mac: `brew install filosottile/musl-cross/musl-cross`
+>
+> The build script auto-detects whatever you have installed.
+
+Then clone and build:
 
 ```bash
-# Get the code
 git clone https://github.com/adiom33/rem.git
 cd rem
-
-# Install the ARM cross-compilation target
-rustup target add armv7-unknown-linux-musleabihf
-
-# Build (this creates a single static binary that runs on the reMarkable)
 ./scripts/build.sh
 ```
 
-**If the build fails** with a linker error, you need an ARM cross-compiler.
-The build script tries these methods in order:
+The build script handles everything — picks the right compiler, adds the ARM
+target, and produces a static binary. No manual `rustup target add` needed.
 
-1. **`cross` (easiest, recommended):** Uses Docker, no toolchain setup:
-   ```bash
-   cargo install cross
-   # Then re-run: ./scripts/build.sh
-   ```
-2. **Ubuntu/Debian native:** Install a cross-linker:
-   ```bash
-   sudo apt install gcc-arm-linux-gnueabihf
-   # The build script auto-detects this and uses it
-   ```
-3. **Mac:** `brew install filosottile/musl-cross/musl-cross`
+### Step 4: Run It
 
-### Step 4: Copy the App to Your reMarkable
-
-With your reMarkable plugged in via USB:
+**Option A: All-in-one (build + deploy + run)**
 
 ```bash
-./scripts/deploy.sh 10.11.99.1
-# Enter your reMarkable password when prompted
-```
-
-This copies the compiled binary to `/home/root/remarkable-ssh` on the tablet.
-
-### Step 5: Run It
-
-**Option A: One command from your computer (easiest)**
-
-```bash
-# Basic
+# Plug in reMarkable via USB, then:
 ./scripts/run-remote.sh 10.11.99.1 user@your-server-ip
 
-# With tmux and on-screen keyboard
+# With extras:
 ./scripts/run-remote.sh 10.11.99.1 user@your-server-ip --tmux --keyboard
 ```
 
-This builds, copies to the tablet, SSHes in, stops xochitl, runs the terminal,
-and restarts xochitl when you're done. Everything is automatic. You can pass
-any extra flags after the server address.
+This does everything: builds, copies to the tablet, SSHes in, runs the terminal,
+and restarts the reMarkable UI when you're done. You can append any flags after
+the server address.
 
-**Option B: Run it manually on the reMarkable**
+**Option B: Deploy and run separately**
 
 ```bash
-# SSH into your reMarkable
-ssh root@10.11.99.1
+# Copy the binary to the tablet
+./scripts/deploy.sh 10.11.99.1
 
-# Run the terminal app (it stops/restarts xochitl automatically)
+# SSH into your reMarkable and run it
+ssh root@10.11.99.1
 /home/root/remarkable-ssh user@your-server-ip
 ```
 
