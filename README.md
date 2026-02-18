@@ -32,9 +32,11 @@ reMarkable 2                          Your Server
 +------------------+
 ```
 
-The app automatically stops the normal reMarkable UI (called "xochitl") when it
-starts, and **restarts it when you exit** -- even if the app crashes or you
-press Ctrl+C. You will not get stuck with a blank screen.
+The app automatically handles the reMarkable UI (called "xochitl"):
+- **Without rm2fb:** Stops xochitl on start, **restarts it when you exit** -- even
+  if the app crashes or you press Ctrl+C. You will not get stuck with a blank screen.
+- **With rm2fb:** Leaves xochitl running (the rm2fb server needs it). See
+  [Display Setup](#display-setup-rm2-firmware-compatibility) if your screen stays blank.
 
 ## Step-by-Step Setup
 
@@ -76,7 +78,7 @@ Then clone this repository and build:
 
 ```bash
 # Get the code
-git clone <this-repo>
+git clone https://github.com/adiom33/rem.git
 cd rem
 
 # Install the ARM cross-compilation target
@@ -117,11 +119,16 @@ This copies the compiled binary to `/home/root/remarkable-ssh` on the tablet.
 **Option A: One command from your computer (easiest)**
 
 ```bash
+# Basic
 ./scripts/run-remote.sh 10.11.99.1 user@your-server-ip
+
+# With tmux and on-screen keyboard
+./scripts/run-remote.sh 10.11.99.1 user@your-server-ip --tmux --keyboard
 ```
 
-This SSHes into the reMarkable, stops xochitl, runs the terminal, and restarts
-xochitl when you're done. Everything is automatic.
+This builds, copies to the tablet, SSHes in, stops xochitl, runs the terminal,
+and restarts xochitl when you're done. Everything is automatic. You can pass
+any extra flags after the server address.
 
 **Option B: Run it manually on the reMarkable**
 
@@ -340,7 +347,7 @@ rem/
   .cargo/config.toml      # Cross-compilation linker settings
   src/
     main.rs               # Entry point, event loop, display refresh
-    framebuffer.rs         # Draws to the e-ink screen via /dev/fb0
+    framebuffer.rs         # E-ink display (native ioctls or rm2fb auto-detected)
     font.rs               # Built-in 8x16 pixel bitmap font (95 ASCII glyphs)
     terminal.rs           # VT100/xterm escape sequence parser
     keyboard.rs           # Physical keyboard + on-screen keyboard
