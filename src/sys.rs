@@ -70,6 +70,11 @@ pub const MXCFB_SET_AUTO_UPDATE_MODE: c_ulong = 0x4004462D;
 // Wait for a specific update to complete
 pub const MXCFB_WAIT_FOR_UPDATE_COMPLETE: c_ulong = 0x4004462F;
 
+// Standard Linux fb ioctls (used as RM2 SWTCON fallback)
+pub const FBIOPAN_DISPLAY: c_ulong = 0x4606;
+pub const FBIO_BLANK: c_ulong = 0x4611;
+pub const FB_BLANK_UNBLANK: c_int = 0;
+
 // Sys V IPC (for rm2fb message queue)
 pub type key_t = c_int;
 pub const IPC_NOWAIT: c_int = 0o4000;

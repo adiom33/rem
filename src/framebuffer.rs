@@ -122,8 +122,63 @@ enum DisplayBackend {
     /// rm2fb: pixels via shared memory, updates via Sys V message queue.
     /// No LD_PRELOAD needed — we speak the protocol natively.
     Rm2fb { msqid: sys::c_int },
+    /// FBIOPAN_DISPLAY fallback: write to fb0 + pan to push frames through the
+    /// mxsfb LCD controller. On RM2 this pushes raw pixels without waveform
+    /// processing — the e-ink panel may show very faint/degraded updates but
+    /// it's better than nothing when rm2fb is unavailable.
+    FbPan,
     /// Nothing works.
     None,
+}
+
+/// Read the reMarkable firmware version from the filesystem.
+/// Returns something like "3.25.1.1" or None if not readable.
+fn read_firmware_version() -> Option<String> {
+    // Primary: /usr/share/remarkable/update.conf contains REMARKABLE_RELEASE_VERSION=x.y.z
+    if let Ok(contents) = std::fs::read_to_string("/usr/share/remarkable/update.conf") {
+        for line in contents.lines() {
+            if let Some(ver) = line.strip_prefix("REMARKABLE_RELEASE_VERSION=") {
+                return Some(ver.trim().to_string());
+            }
+        }
+    }
+    // Fallback: /etc/version
+    if let Ok(ver) = std::fs::read_to_string("/etc/version") {
+        let trimmed = ver.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+    None
+}
+
+/// Detect device model from /sys/devices. Returns "reMarkable 1", "reMarkable 2", or "unknown".
+fn detect_device_model() -> &'static str {
+    if let Ok(dt) = std::fs::read_to_string("/sys/firmware/devicetree/base/model") {
+        let dt = dt.trim_end_matches('\0');
+        if dt.contains("reMarkable 2") || dt.contains("zero-sugar") {
+            return "reMarkable 2";
+        }
+        if dt.contains("reMarkable") {
+            return "reMarkable 1";
+        }
+    }
+    // Fallback: check for RM2's SWTCON marker
+    if std::path::Path::new("/sys/class/graphics/fb0/device/driver").exists() {
+        if let Ok(link) = std::fs::read_link("/sys/class/graphics/fb0/device/driver") {
+            let driver_name = link
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("");
+            if driver_name.contains("mxsfb") || driver_name.contains("lcdif") {
+                return "reMarkable 2";
+            }
+            if driver_name.contains("mxc_epdc") {
+                return "reMarkable 1";
+            }
+        }
+    }
+    "unknown"
 }
 
 pub struct Framebuffer {
@@ -150,6 +205,14 @@ unsafe impl Send for Framebuffer {}
 
 impl Framebuffer {
     pub fn open(path: &str) -> Result<Self, String> {
+        // Log device info upfront for diagnostics
+        let device_model = detect_device_model();
+        let firmware_ver = read_firmware_version();
+        eprintln!("Device: {}", device_model);
+        if let Some(ref ver) = firmware_ver {
+            eprintln!("Firmware: {}", ver);
+        }
+
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -188,9 +251,17 @@ impl Framebuffer {
         let fb_id = String::from_utf8_lossy(&finfo.id[..fb_id_end]);
 
         eprintln!(
-            "Framebuffer: {}x{} @ {}bpp ({}KB) id=\"{}\"",
+            "Framebuffer: {}x{} @ {}bpp ({}KB) driver=\"{}\"",
             width, height, bpp, fb0_mem_len / 1024, fb_id
         );
+
+        let is_rm2_driver = {
+            let id_lower = fb_id.to_lowercase();
+            id_lower.contains("mxs") || id_lower.contains("lcdif") || id_lower.contains("mxsfb")
+        };
+        if is_rm2_driver {
+            eprintln!("  (RM2 software display controller — native MXCFB ioctls will not work)");
+        }
 
         // mmap /dev/fb0 (we always do this even if we switch to rm2fb later)
         let fb0_mem = unsafe {
@@ -225,10 +296,13 @@ impl Framebuffer {
         };
 
         // Probe display backends in order of preference:
-        // 1. Native MXCFB ioctls (cheapest, no dependencies)
-        // 2. rm2fb shared memory + message queue (auto-detected)
+        // 1. Native MXCFB ioctls (cheapest, works on RM1)
+        // 2. rm2fb shared memory + message queue (RM2 with rm2fb server)
+        // 3. FBIOPAN_DISPLAY fallback (RM2 without rm2fb — degraded quality)
 
-        // Try native ioctls first
+        // Try native ioctls first (skip the probe if we know it's an RM2 driver
+        // to avoid spurious error logs, but still try in case a future firmware
+        // re-enables it)
         fb.try_auto_update_mode();
         if fb.probe_native_ioctl() {
             return Ok(fb);
@@ -239,14 +313,45 @@ impl Framebuffer {
             return Ok(fb);
         }
 
-        // Nothing works
-        eprintln!("WARNING: No working display backend found!");
-        eprintln!("  Native MXCFB ioctls failed and rm2fb is not running.");
-        eprintln!("  The screen will NOT update.");
-        eprintln!("");
-        eprintln!("  To fix this on reMarkable 2:");
-        eprintln!("  1. Install rm2fb (see README.md)");
-        eprintln!("  2. Start the rm2fb server, then re-run this app");
+        // rm2fb not available — try FBIOPAN_DISPLAY fallback
+        if fb.probe_fb_pan() {
+            return Ok(fb);
+        }
+
+        // Nothing works — give detailed guidance
+        eprintln!();
+        eprintln!("=== NO WORKING DISPLAY BACKEND ===");
+        eprintln!();
+        eprintln!("  Device:   {}", device_model);
+        if let Some(ref ver) = firmware_ver {
+            eprintln!("  Firmware: {}", ver);
+        }
+        eprintln!("  Driver:   {}", fb_id);
+        eprintln!();
+        if device_model == "reMarkable 2" {
+            eprintln!("  The reMarkable 2 requires rm2fb for display refresh.");
+            eprintln!("  Native MXCFB ioctls don't work (the kernel driver is mxsfb,");
+            eprintln!("  not mxc_epdc_fb). This is expected on RM2.");
+            eprintln!();
+            eprintln!("  To fix:");
+            eprintln!("  1. Download rm2fb for your firmware version from:");
+            eprintln!("     https://github.com/ddvk/remarkable2-framebuffer/releases");
+            eprintln!("  2. Copy librm2fb_server.so to the tablet");
+            eprintln!("  3. Restart xochitl with the server loaded:");
+            eprintln!("     systemctl stop xochitl");
+            eprintln!("     LD_PRELOAD=/opt/lib/librm2fb_server.so.1 xochitl &");
+            eprintln!("  4. Re-run this app");
+            eprintln!();
+            if let Some(ref ver) = firmware_ver {
+                eprintln!("  IMPORTANT: rm2fb must match your firmware ({}).", ver);
+                eprintln!("  If you see 'Missing address for function', the rm2fb build");
+                eprintln!("  is not compatible with this firmware version.");
+            }
+        } else {
+            eprintln!("  The app will run but the screen will not update.");
+            eprintln!("  See README.md for display setup instructions.");
+        }
+        eprintln!();
         Ok(fb)
     }
 
@@ -367,6 +472,61 @@ impl Framebuffer {
         eprintln!("  Message queue: id={} key=0x{:x}", msqid, sys::RM2FB_MSG_KEY);
 
         true
+    }
+
+    /// Try FBIOPAN_DISPLAY as a last-resort fallback.
+    /// On RM2, the mxsfb driver accepts FBIOPAN_DISPLAY to flip display buffers.
+    /// This won't do proper e-ink waveform processing (no grayscale transitions),
+    /// but it can push raw pixel data to the panel — resulting in faint/degraded
+    /// but potentially usable output.
+    fn probe_fb_pan(&mut self) -> bool {
+        let fd = self.file.as_raw_fd();
+
+        // Unblank the display first
+        let ret = unsafe { sys::ioctl(fd, sys::FBIO_BLANK, sys::FB_BLANK_UNBLANK as sys::c_ulong) };
+        if ret < 0 {
+            eprintln!("FBIO_BLANK probe: errno {} ({})", sys::errno(), sys::errno_str());
+        }
+
+        // Try FBIOPAN_DISPLAY with current vinfo
+        let mut vinfo = FbVarScreeninfo::default();
+        let ret = unsafe { sys::ioctl(fd, sys::FBIOGET_VSCREENINFO, &mut vinfo) };
+        if ret < 0 {
+            eprintln!("FBIOPAN probe: can't read vscreeninfo");
+            return false;
+        }
+
+        // Set offsets to 0 and try panning
+        vinfo.xoffset = 0;
+        vinfo.yoffset = 0;
+        let ret = unsafe { sys::ioctl(fd, sys::FBIOPAN_DISPLAY, &vinfo) };
+        if ret < 0 {
+            eprintln!("FBIOPAN_DISPLAY probe: errno {} ({})", sys::errno(), sys::errno_str());
+            return false;
+        }
+
+        self.backend = DisplayBackend::FbPan;
+        eprintln!("Display backend: FBIOPAN_DISPLAY (fallback — degraded e-ink quality)");
+        eprintln!("  WARNING: Without rm2fb, display updates bypass e-ink waveform");
+        eprintln!("  processing. Text may appear faint or require multiple refreshes.");
+        eprintln!("  For best results, install rm2fb (see README.md).");
+        true
+    }
+
+    /// Push update via FBIOPAN_DISPLAY. This tells the mxsfb LCD controller
+    /// to re-scan the framebuffer memory. On RM2, this is how SWTCON pushes
+    /// frames internally, but without the waveform processing step.
+    fn send_update_fb_pan(&mut self) {
+        let fd = self.file.as_raw_fd();
+        let mut vinfo = FbVarScreeninfo::default();
+        let ret = unsafe { sys::ioctl(fd, sys::FBIOGET_VSCREENINFO, &mut vinfo) };
+        if ret < 0 {
+            return;
+        }
+        vinfo.xoffset = 0;
+        vinfo.yoffset = 0;
+        // Activate = set the yoffset and pan
+        unsafe { sys::ioctl(fd, sys::FBIOPAN_DISPLAY, &vinfo); }
     }
 
     /// Send update via rm2fb message queue.
@@ -532,6 +692,22 @@ impl Framebuffer {
         }
     }
 
+    /// Returns true if we're using the FBIOPAN_DISPLAY fallback (degraded quality).
+    pub fn is_fb_pan(&self) -> bool {
+        matches!(self.backend, DisplayBackend::FbPan)
+    }
+
+    /// Returns a human-readable name for the current display backend.
+    pub fn backend_name(&self) -> &'static str {
+        match self.backend {
+            DisplayBackend::NativeV2 => "native MXCFB V2",
+            DisplayBackend::NativeV1 => "native MXCFB V1",
+            DisplayBackend::Rm2fb { .. } => "rm2fb",
+            DisplayBackend::FbPan => "FBIOPAN (degraded)",
+            DisplayBackend::None => "none",
+        }
+    }
+
     pub fn refresh_region(
         &mut self,
         x: u32, y: u32, w: u32, h: u32,
@@ -541,6 +717,7 @@ impl Framebuffer {
             DisplayBackend::NativeV2 => self.send_update_v2(x, y, w, h, waveform, full),
             DisplayBackend::NativeV1 => self.send_update_v1(x, y, w, h, waveform, full),
             DisplayBackend::Rm2fb { msqid } => self.send_update_rm2fb(msqid, x, y, w, h, waveform, full),
+            DisplayBackend::FbPan => self.send_update_fb_pan(),
             DisplayBackend::None => {}
         }
     }

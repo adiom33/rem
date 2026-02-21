@@ -243,15 +243,25 @@ hardware EPDC. The app automatically detects the best way to update the screen:
 |---------|-------------|----------------|
 | **Native MXCFB** | Direct ioctl to `/dev/fb0` | RM1, or RM2 with working EPDC driver |
 | **rm2fb (auto)** | Shared memory + message queue | RM2 with rm2fb server running |
-| **None** | Screen won't update | Neither works — see below |
+| **FBIOPAN (fallback)** | Raw framebuffer pan | RM2 without rm2fb — degraded quality |
+| **None** | Screen won't update | Nothing works — see below |
 
 **On startup, the app logs which backend it selected:**
 
 ```
-Display backend: native MXCFB V2 ioctl            ← direct driver, best case
-Display backend: rm2fb (native client, no LD_PRELOAD needed)   ← auto-detected rm2fb
-WARNING: No working display backend found!         ← need to set up rm2fb
+Device: reMarkable 2
+Firmware: 3.25.1.1
+Framebuffer: 1404x1872 @ 16bpp (5136KB) driver="mxs-lcdif"
+Display backend: rm2fb (native client, no LD_PRELOAD needed)   ← best on RM2
+Display backend: native MXCFB V2 ioctl                        ← best on RM1
+Display backend: FBIOPAN_DISPLAY (fallback — degraded)         ← works but ugly
+=== NO WORKING DISPLAY BACKEND ===                             ← need rm2fb
 ```
+
+> **Note on the FBIOPAN fallback:** This pushes pixels through the LCD controller
+> without e-ink waveform processing. Text may appear faint or require multiple
+> refreshes. It exists as a last resort for testing. For usable output on RM2,
+> install rm2fb.
 
 ### rm2fb: automatic integration (no LD_PRELOAD needed)
 
@@ -329,8 +339,11 @@ If ghosting bothers you, press Ctrl+L to trigger a full redraw in most shells.
 | **Build fails: linker not found** | Install `cross` (`cargo install cross`) or `gcc-arm-linux-gnueabihf` (`sudo apt install gcc-arm-linux-gnueabihf`). The build script auto-detects available linkers. |
 | **Build fails: `c_char` type error** | Make sure you have the latest code. The `c_char` type was changed from `i8` to `core::ffi::c_char` to work correctly on ARM targets. |
 | **"Cannot open /dev/fb0"** | The app must run directly on the reMarkable, not over SSH in a normal terminal. Also make sure xochitl isn't holding the framebuffer -- the app stops it automatically, but if something went wrong, run `systemctl stop xochitl` first. |
-| **Screen stays blank / no refresh** | Check the startup log. The app auto-detects native ioctls and rm2fb. If it says "No working display backend found", you need to install the rm2fb server. See [Display Setup](#display-setup-rm2-firmware-compatibility). |
-| **rm2fb: "Missing address for function"** | The rm2fb server doesn't support your firmware version. Check the rm2fb issues for your specific firmware. The app's native rm2fb client works fine — it's the server .so that needs firmware-specific addresses. |
+| **Screen stays blank / no refresh** | Check the startup log. The app logs `Device:`, `Firmware:`, `Display backend:` on start. If it says "NO WORKING DISPLAY BACKEND", you need the rm2fb server. If it says "FBIOPAN (fallback)", the display will be degraded — install rm2fb for proper output. See [Display Setup](#display-setup-rm2-firmware-compatibility). |
+| **rm2fb: "Missing address for function"** | The rm2fb server doesn't support your firmware version. Each firmware builds xochitl at different memory addresses, and rm2fb needs matching offsets. Check the [rm2fb releases](https://github.com/ddvk/remarkable2-framebuffer/releases) for your exact firmware version (shown at startup as `Firmware: x.y.z`). |
+| **rm2fb: "Failed to lock epframebuffer"** | Another process already has the display lock. Stop xochitl first: `systemctl stop xochitl`, then start it with the rm2fb server: `LD_PRELOAD=/opt/lib/librm2fb_server.so.1 xochitl &` |
+| **rm2fb: Qt library errors** | The rm2fb server binary was built against a different Qt version than your firmware. You need an rm2fb build that matches your firmware's Qt libraries. Check `/usr/lib/libQt5*.so*` on the tablet and compare with the rm2fb build requirements. |
+| **Display is faint/degraded** | You're likely using the FBIOPAN fallback (check startup log). This bypasses e-ink waveform processing. Install rm2fb for proper display output. |
 | **No keyboard input** | Make sure the Type Folio is connected. Try `--kb /dev/input/event3` (or event2, event4). Run `cat /proc/bus/input/devices` on the reMarkable to find the right device. |
 | **SSH connection refused** | Make sure the target server has SSH running and is reachable from the reMarkable's network. |
 | **"command not found: ssh"** | The reMarkable may only have `dbclient` (Dropbear SSH client). The app auto-detects this, but you can also use `--ssh-cmd dbclient`. |

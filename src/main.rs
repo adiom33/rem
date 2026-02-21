@@ -313,6 +313,8 @@ fn main() {
         }
     };
 
+    eprintln!("Display backend: {}", fb.backend_name());
+
     // ---- Stop xochitl so we own the framebuffer ----
     // Skip if using rm2fb — the rm2fb server runs inside xochitl (or alongside it),
     // so stopping xochitl would kill the display backend.
@@ -603,9 +605,12 @@ fn main() {
         fb.clear();
         fb.draw_str("Session ended. Returning to xochitl...", 20, 20, scale, false);
         fb.refresh_full();
+        // Give the e-ink panel time to finish the refresh before xochitl takes over
         std::thread::sleep(std::time::Duration::from_secs(2));
         restart_xochitl();
     }
+
+    eprintln!("Display backend was: {}", fb.backend_name());
 
     eprintln!("Exiting.");
 }
