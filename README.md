@@ -246,16 +246,21 @@ hardware EPDC. The app automatically detects the best way to update the screen:
 | **FBIOPAN (fallback)** | Raw framebuffer pan | RM2 without rm2fb — degraded quality |
 | **None** | Screen won't update | Nothing works — see below |
 
-**On startup, the app logs which backend it selected:**
+**On startup, the app logs which backend it selected** (one of these):
+
+```
+Display backend: rm2fb                ← best on RM2
+Display backend: native MXCFB V2     ← best on RM1
+Display backend: FBIOPAN (degraded)   ← works but ugly, no rm2fb
+=== NO WORKING DISPLAY BACKEND ===   ← need to set up rm2fb
+```
+
+It also logs device info for diagnostics:
 
 ```
 Device: reMarkable 2
 Firmware: 3.25.1.1
 Framebuffer: 1404x1872 @ 16bpp (5136KB) driver="mxs-lcdif"
-Display backend: rm2fb (native client, no LD_PRELOAD needed)   ← best on RM2
-Display backend: native MXCFB V2 ioctl                        ← best on RM1
-Display backend: FBIOPAN_DISPLAY (fallback — degraded)         ← works but ugly
-=== NO WORKING DISPLAY BACKEND ===                             ← need rm2fb
 ```
 
 > **Note on the FBIOPAN fallback:** This pushes pixels through the LCD controller
@@ -300,6 +305,26 @@ LD_PRELOAD=/opt/lib/librm2fb_server.so.1 xochitl &
 **If rm2fb says "Missing address for function":** Your firmware version isn't
 supported by that rm2fb release. Check the rm2fb issues/wiki for your version.
 
+### Unsupported firmware? (3.4+)
+
+Pre-built rm2fb only supports up to firmware ~3.3. If you're on a newer version,
+you can extract the addresses yourself and optionally build rm2fb from source:
+
+```bash
+# Step 1: Check compatibility (is the pre-built .so usable?)
+./scripts/rm2fb-check.sh 10.11.99.1
+
+# Step 2a: If pre-built .so loads fine, just need addresses:
+./scripts/extract-rm2fb-addrs.sh 10.11.99.1
+# Then use Ghidra to find function addresses from the marker strings
+./scripts/deploy-rm2fb-conf.sh 10.11.99.1 0x<update_addr> 0x<create_addr>
+
+# Step 2b: If pre-built .so is incompatible, build from source:
+./scripts/build-rm2fb.sh 10.11.99.1
+```
+
+See the script headers for detailed instructions.
+
 ## What Works in the Terminal
 
 The built-in terminal emulator is compatible with most command-line programs:
@@ -340,7 +365,7 @@ If ghosting bothers you, press Ctrl+L to trigger a full redraw in most shells.
 | **Build fails: `c_char` type error** | Make sure you have the latest code. The `c_char` type was changed from `i8` to `core::ffi::c_char` to work correctly on ARM targets. |
 | **"Cannot open /dev/fb0"** | The app must run directly on the reMarkable, not over SSH in a normal terminal. Also make sure xochitl isn't holding the framebuffer -- the app stops it automatically, but if something went wrong, run `systemctl stop xochitl` first. |
 | **Screen stays blank / no refresh** | Check the startup log. The app logs `Device:`, `Firmware:`, `Display backend:` on start. If it says "NO WORKING DISPLAY BACKEND", you need the rm2fb server. If it says "FBIOPAN (fallback)", the display will be degraded — install rm2fb for proper output. See [Display Setup](#display-setup-rm2-firmware-compatibility). |
-| **rm2fb: "Missing address for function"** | The rm2fb server doesn't support your firmware version. Each firmware builds xochitl at different memory addresses, and rm2fb needs matching offsets. Check the [rm2fb releases](https://github.com/ddvk/remarkable2-framebuffer/releases) for your exact firmware version (shown at startup as `Firmware: x.y.z`). |
+| **rm2fb: "Missing address for function"** | The rm2fb server doesn't support your firmware version. Each firmware builds xochitl at different memory addresses, and rm2fb needs matching offsets. Either check the [rm2fb releases](https://github.com/ddvk/remarkable2-framebuffer/releases) or extract addresses yourself with `./scripts/rm2fb-check.sh` — see [Unsupported firmware](#unsupported-firmware-34). |
 | **rm2fb: "Failed to lock epframebuffer"** | Another process already has the display lock. Stop xochitl first: `systemctl stop xochitl`, then start it with the rm2fb server: `LD_PRELOAD=/opt/lib/librm2fb_server.so.1 xochitl &` |
 | **rm2fb: Qt library errors** | The rm2fb server binary was built against a different Qt version than your firmware. You need an rm2fb build that matches your firmware's Qt libraries. Check `/usr/lib/libQt5*.so*` on the tablet and compare with the rm2fb build requirements. |
 | **Display is faint/degraded** | You're likely using the FBIOPAN fallback (check startup log). This bypasses e-ink waveform processing. Install rm2fb for proper display output. |
@@ -370,6 +395,10 @@ rem/
     build.sh              # Cross-compile for ARM (reMarkable hardware)
     deploy.sh             # Copy binary to reMarkable via USB
     run-remote.sh         # Build + deploy + run, all in one command
+    rm2fb-check.sh        # Diagnose rm2fb compatibility on the tablet
+    extract-rm2fb-addrs.sh # Pull xochitl and find rm2fb function addresses
+    deploy-rm2fb-conf.sh  # Deploy custom rm2fb.conf with your addresses
+    build-rm2fb.sh        # Build rm2fb from source for unsupported firmware
 ```
 
 The entire app is a single Rust binary with **zero external dependencies**.
