@@ -40,17 +40,19 @@ The app automatically handles the reMarkable UI (called "xochitl"):
 
 ## Quick Start
 
-If you have Rust and Docker installed, this is the whole thing:
+If you have Rust and Docker installed:
 
 ```bash
 git clone https://github.com/adiom33/rem.git
 cd rem
 cargo install cross                       # Docker-based ARM cross-compiler
+./scripts/install.sh 10.11.99.1           # Build, deploy, auto-configure rm2fb
 ./scripts/run-remote.sh 10.11.99.1 user@your-server-ip
 ```
 
-That single script builds, copies to the tablet, and runs it. When you exit,
-the reMarkable UI comes back automatically.
+`install.sh` does everything: builds the binary, deploys it, auto-extracts
+rm2fb addresses from your tablet's xochitl binary, writes the config, and
+sets up the display backend. After that, `run-remote.sh` is all you need.
 
 First time? Read on for the detailed setup.
 
@@ -187,6 +189,7 @@ remarkable-ssh --scale 3 user@myhost
 | `--ssh-cmd CMD` | SSH binary to use (default: `ssh`, falls back to `dbclient`) |
 | `--ssh-arg ARG` | Extra argument to pass to SSH (repeatable) |
 | `--ssh-args ARGS` | Extra arguments for SSH, comma-separated |
+| `--setup` | Auto-extract rm2fb addresses and write `/etc/rm2fb.conf` (run on tablet) |
 | `--help` | Show help |
 
 ### About `--tmux`
@@ -307,23 +310,20 @@ supported by that rm2fb release. Check the rm2fb issues/wiki for your version.
 
 ### Unsupported firmware? (3.4+)
 
-Pre-built rm2fb only supports up to firmware ~3.3. If you're on a newer version,
-you can extract the addresses yourself and optionally build rm2fb from source:
+Pre-built rm2fb only has addresses for firmware up to ~3.3. But `install.sh`
+handles this automatically — it runs `remarkable-ssh --setup` on the tablet,
+which parses the xochitl binary, finds the function addresses, and writes
+`/etc/rm2fb.conf`. No Ghidra or manual reverse engineering needed.
+
+If the auto-extraction fails (e.g. firmware changed the marker strings),
+fall back to the manual scripts:
 
 ```bash
-# Step 1: Check compatibility (is the pre-built .so usable?)
-./scripts/rm2fb-check.sh 10.11.99.1
-
-# Step 2a: If pre-built .so loads fine, just need addresses:
-./scripts/extract-rm2fb-addrs.sh 10.11.99.1
-# Then use Ghidra to find function addresses from the marker strings
-./scripts/deploy-rm2fb-conf.sh 10.11.99.1 0x<update_addr> 0x<create_addr>
-
-# Step 2b: If pre-built .so is incompatible, build from source:
-./scripts/build-rm2fb.sh 10.11.99.1
+./scripts/rm2fb-check.sh 10.11.99.1          # Diagnose compatibility
+./scripts/extract-rm2fb-addrs.sh 10.11.99.1   # Pull xochitl for Ghidra analysis
+./scripts/deploy-rm2fb-conf.sh 10.11.99.1 0x<update> 0x<create>  # Deploy manually
+./scripts/build-rm2fb.sh 10.11.99.1           # Build rm2fb from source (if .so is incompatible)
 ```
-
-See the script headers for detailed instructions.
 
 ## What Works in the Terminal
 
@@ -392,6 +392,7 @@ rem/
     pty.rs                # Pseudo-terminal (PTY) and child process management
     sys.rs                # Raw Linux syscall bindings (replaces libc crate)
   scripts/
+    install.sh            # One-click: build + deploy + auto-configure rm2fb
     build.sh              # Cross-compile for ARM (reMarkable hardware)
     deploy.sh             # Copy binary to reMarkable via USB
     run-remote.sh         # Build + deploy + run, all in one command

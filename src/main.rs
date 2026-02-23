@@ -3,6 +3,7 @@ mod framebuffer;
 mod input;
 mod keyboard;
 mod pty;
+mod setup;
 #[allow(non_camel_case_types, dead_code)]
 mod sys;
 mod terminal;
@@ -46,6 +47,7 @@ fn print_usage() {
     eprintln!("  --cmd STRING    Remote command to run via SSH");
     eprintln!("  --ssh-args ARGS Extra arguments passed to SSH (comma-separated)");
     eprintln!("  --ssh-arg ARG   Extra SSH argument (repeatable)");
+    eprintln!("  --setup         Auto-detect rm2fb addresses and write /etc/rm2fb.conf");
     eprintln!("  --help          Show this help");
     eprintln!();
     eprintln!("EXAMPLES:");
@@ -147,6 +149,16 @@ fn parse_args() -> Config {
                 i += 1;
                 if i < args.len() {
                     config.ssh_extra_args.push(args[i].clone());
+                }
+            }
+            "--setup" => {
+                // Run rm2fb auto-setup and exit
+                match setup::run_setup() {
+                    Ok(()) => std::process::exit(0),
+                    Err(e) => {
+                        eprintln!("Setup failed: {}", e);
+                        std::process::exit(1);
+                    }
                 }
             }
             "--help" | "-h" => {
