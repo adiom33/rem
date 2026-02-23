@@ -67,8 +67,11 @@ echo "     'No working MXCFB ioctl' means you need rm2fb. See README.md."
 echo ""
 
 # Build the remote command with proper quoting.
-# Use trap EXIT to guarantee xochitl restarts even on crash/signal.
-REMOTE_CMD="set -e; trap 'systemctl start xochitl' EXIT; systemctl stop xochitl; ${RM_DEST}"
+# The binary itself decides whether to stop xochitl based on the display backend:
+#   - rm2fb backend: xochitl must stay running (rm2fb lives alongside it)
+#   - native/other: xochitl must be stopped so we own the framebuffer
+# So we let the binary manage xochitl lifecycle and just run it directly.
+REMOTE_CMD="${RM_DEST}"
 
 # Append SSH target as a properly quoted argument
 if [ -n "$SSH_TARGET" ]; then
@@ -84,4 +87,4 @@ done
 ssh -t "${SSH_OPTS[@]}" -- "${RM_USER}@${RM_IP}" "$REMOTE_CMD"
 
 echo ""
-echo "Session ended. xochitl restarted."
+echo "Session ended."

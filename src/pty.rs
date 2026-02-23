@@ -135,6 +135,8 @@ impl Pty {
             if n < 0 {
                 let err = io::Error::last_os_error();
                 if err.kind() == io::ErrorKind::WouldBlock {
+                    // Brief sleep to avoid busy-spinning when PTY buffer is full
+                    std::thread::sleep(std::time::Duration::from_millis(1));
                     continue;
                 }
                 return Err(format!("write to PTY failed: {}", err));

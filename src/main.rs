@@ -348,9 +348,18 @@ fn main() {
     };
 
     let status_bar_height = char_h * STATUS_BAR_ROWS;
-    let term_area_height = fb.height - kb_height - status_bar_height;
+    let term_area_height = fb.height.saturating_sub(kb_height).saturating_sub(status_bar_height);
     let term_cols = fb.width / char_w;
     let term_rows = term_area_height / char_h;
+
+    if term_cols == 0 || term_rows == 0 {
+        eprintln!(
+            "ERROR: Terminal dimensions are {}x{} — display too small or scale too large.",
+            term_cols, term_rows,
+        );
+        restart_xochitl();
+        std::process::exit(1);
+    }
 
     eprintln!(
         "Terminal: {}x{} chars (scale {}x, {}x{} pixels per char)",
@@ -528,6 +537,10 @@ fn main() {
             let data = pty.read();
             if !data.is_empty() {
                 term.process(&data);
+                // Flush any terminal responses (DSR, DA) back to the PTY
+                if let Some(response) = term.take_response() {
+                    let _ = pty.write(&response);
+                }
                 needs_refresh = true;
             }
         }

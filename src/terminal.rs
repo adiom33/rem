@@ -24,10 +24,12 @@ impl Default for Cell {
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum State {
     Normal,
-    Escape,     // Got ESC
-    CSI,        // Got ESC[
-    OSC,        // Got ESC]
-    CSIParam,   // Collecting CSI parameters
+    Escape,         // Got ESC
+    EscapeCharset,  // Got ESC ( or ESC ) etc — consume one more byte
+    CSI,            // Got ESC[
+    OSC,            // Got ESC]
+    OscEscape,      // Got ESC inside OSC — expecting '\' for ST
+    CSIParam,       // Collecting CSI parameters
 }
 
 pub struct Terminal {
@@ -81,6 +83,9 @@ pub struct Terminal {
 
     // Bracketed paste mode
     pub bracketed_paste: bool,
+
+    // Response buffer: bytes to send back to the PTY (e.g. DSR replies)
+    response_buf: Vec<u8>,
 }
 
 impl Terminal {
@@ -104,7 +109,7 @@ impl Terminal {
             bold: false,
             inverse: false,
             scroll_top: 0,
-            scroll_bottom: rows - 1,
+            scroll_bottom: rows.saturating_sub(1),
             saved_x: 0,
             saved_y: 0,
             app_cursor_keys: false,
@@ -118,6 +123,7 @@ impl Terminal {
             alt_cursor_y: 0,
             using_alt_screen: false,
             bracketed_paste: false,
+            response_buf: Vec::new(),
         }
     }
 
@@ -192,19 +198,30 @@ impl Terminal {
         }
     }
 
-    /// Generate a response string for device status queries.
-    /// Returns bytes to send back to the PTY.
+    /// Take any pending response bytes (DSR, DA replies) to send back to the PTY.
     pub fn take_response(&mut self) -> Option<Vec<u8>> {
-        // Responses are generated inline during process_byte
-        None
+        if self.response_buf.is_empty() {
+            None
+        } else {
+            Some(std::mem::take(&mut self.response_buf))
+        }
     }
 
     fn process_byte(&mut self, byte: u8) {
         match self.state {
             State::Normal => self.process_normal(byte),
             State::Escape => self.process_escape(byte),
+            State::EscapeCharset => {
+                // Consume the charset designator byte (e.g. 'B' in ESC ( B) and return to normal
+                self.state = State::Normal;
+            }
             State::CSI | State::CSIParam => self.process_csi(byte),
             State::OSC => self.process_osc(byte),
+            State::OscEscape => {
+                // We saw ESC inside an OSC sequence. If this is '\', it's ST (string terminator).
+                // Either way, the OSC is over.
+                self.state = State::Normal;
+            }
         }
     }
 
@@ -260,8 +277,8 @@ impl Terminal {
                 self.state = State::OSC;
             }
             b'(' | b')' | b'*' | b'+' => {
-                // Select character set - consume next byte
-                self.state = State::Normal;
+                // Select character set — next byte is the designator (e.g. 'B' for ASCII)
+                self.state = State::EscapeCharset;
             }
             b'D' => {
                 // Index - move down one line, scroll if needed
@@ -460,7 +477,7 @@ impl Terminal {
                 self.scroll_bottom = (bottom as usize).saturating_sub(1).min(self.rows - 1);
                 if self.scroll_top >= self.scroll_bottom {
                     self.scroll_top = 0;
-                    self.scroll_bottom = self.rows - 1;
+                    self.scroll_bottom = self.rows.saturating_sub(1);
                 }
                 self.cursor_x = 0;
                 self.cursor_y = 0;
@@ -531,13 +548,33 @@ impl Terminal {
                 self.state = State::Normal;
             }
             b'c' => {
-                // Device Attributes - we could respond but skip for simplicity
+                // Device Attributes (DA1) — respond as VT100
                 self.finish_params();
+                let p = if !self.params.is_empty() { self.params[0] } else { 0 };
+                if p == 0 {
+                    // ESC[?1;0c = VT101 with no options
+                    self.response_buf.extend_from_slice(b"\x1b[?1;0c");
+                }
                 self.state = State::Normal;
             }
             b'n' => {
-                // Device Status Report - skip
+                // Device Status Report (DSR)
                 self.finish_params();
+                let p = if !self.params.is_empty() { self.params[0] } else { 0 };
+                match p {
+                    5 => {
+                        // Status report — respond "OK"
+                        self.response_buf.extend_from_slice(b"\x1b[0n");
+                    }
+                    6 => {
+                        // Cursor position report — respond ESC[row;colR (1-based)
+                        let row = self.cursor_y + 1;
+                        let col = self.cursor_x + 1;
+                        let resp = format!("\x1b[{};{}R", row, col);
+                        self.response_buf.extend_from_slice(resp.as_bytes());
+                    }
+                    _ => {}
+                }
                 self.state = State::Normal;
             }
             b't' => {
@@ -560,8 +597,8 @@ impl Terminal {
                 self.state = State::Normal;
             }
             0x1B => {
-                // Might be ST (ESC \) - go to escape state briefly
-                self.state = State::Normal;
+                // Might be ST (ESC \) — wait for the '\' byte
+                self.state = State::OscEscape;
             }
             _ => {
                 // Continue consuming OSC
@@ -900,7 +937,7 @@ impl Terminal {
         self.bold = false;
         self.inverse = false;
         self.scroll_top = 0;
-        self.scroll_bottom = self.rows - 1;
+        self.scroll_bottom = self.rows.saturating_sub(1);
         self.app_cursor_keys = false;
         self.cursor_visible = true;
         self.bracketed_paste = false;
