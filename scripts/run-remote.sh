@@ -84,7 +84,16 @@ for arg in "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"; do
     REMOTE_CMD="${REMOTE_CMD} $(printf '%q' "$arg")"
 done
 
-ssh -t "${SSH_OPTS[@]}" -- "${RM_USER}@${RM_IP}" "$REMOTE_CMD"
+# Safety net: if the binary crashes (SIGSEGV, SIGKILL, etc.), the Rust panic hook
+# won't run and xochitl stays stopped — leaving a blank screen.  Wrap in a shell
+# snippet that restarts xochitl on non-zero exit.
+ssh -t "${SSH_OPTS[@]}" -- "${RM_USER}@${RM_IP}" "
+    ${REMOTE_CMD}; rc=\$?;
+    if [ \$rc -ne 0 ]; then
+        systemctl start xochitl 2>/dev/null;
+    fi;
+    exit \$rc
+"
 
 echo ""
 echo "Session ended."

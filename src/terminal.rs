@@ -218,9 +218,16 @@ impl Terminal {
             State::CSI | State::CSIParam => self.process_csi(byte),
             State::OSC => self.process_osc(byte),
             State::OscEscape => {
-                // We saw ESC inside an OSC sequence. If this is '\', it's ST (string terminator).
-                // Either way, the OSC is over.
-                self.state = State::Normal;
+                // We saw ESC inside an OSC sequence.
+                if byte == b'\\' {
+                    // ST (String Terminator) — OSC is properly closed
+                    self.state = State::Normal;
+                } else {
+                    // The ESC was actually the start of a new escape sequence,
+                    // not part of ST.  Re-enter Escape state and process this byte.
+                    self.state = State::Escape;
+                    self.process_escape(byte);
+                }
             }
         }
     }
@@ -715,7 +722,7 @@ impl Terminal {
     fn line_feed(&mut self) {
         if self.cursor_y == self.scroll_bottom {
             self.scroll_up();
-        } else if self.cursor_y < self.rows - 1 {
+        } else if self.cursor_y < self.rows.saturating_sub(1) {
             self.cursor_y += 1;
         }
     }
@@ -822,6 +829,9 @@ impl Terminal {
     fn insert_lines(&mut self, n: usize) {
         let top = self.cursor_y;
         let bottom = self.scroll_bottom;
+        if top > bottom {
+            return; // Cursor is outside the scroll region — nothing to do
+        }
         for _ in 0..n.min(bottom - top + 1) {
             self.grid.remove(bottom);
             self.grid.insert(top, vec![Cell::default(); self.cols]);
@@ -838,6 +848,9 @@ impl Terminal {
     fn delete_lines(&mut self, n: usize) {
         let top = self.cursor_y;
         let bottom = self.scroll_bottom;
+        if top > bottom {
+            return; // Cursor is outside the scroll region — nothing to do
+        }
         for _ in 0..n.min(bottom - top + 1) {
             self.grid.remove(top);
             self.grid.insert(bottom, vec![Cell::default(); self.cols]);
