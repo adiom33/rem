@@ -212,7 +212,6 @@ fn render_terminal(
     fb: &mut Framebuffer,
     term: &Terminal,
     scale: usize,
-    _offset_y: usize,
 ) {
     let char_w = font::FONT_WIDTH * scale;
     let char_h = font::FONT_HEIGHT * scale;
@@ -440,11 +439,15 @@ fn main() {
     // ---- Initial render ----
     fb.clear();
 
-    let welcome = format!("remarkable-ssh | Connecting to: {}", display_target);
+    let welcome = if config.ssh_target.is_some() {
+        format!("remarkable-ssh | Connecting to: {}", display_target)
+    } else {
+        format!("remarkable-ssh | {}", display_target)
+    };
     term.process(welcome.as_bytes());
     term.process(b"\r\n");
 
-    render_terminal(&mut fb, &term, scale, 0);
+    render_terminal(&mut fb, &term, scale);
     render_status_bar(&mut fb, &term, scale, term_area_height, display_target);
 
     if let Some(ref osk) = osk {
@@ -594,7 +597,7 @@ fn main() {
         if needs_refresh {
             let elapsed = last_refresh.elapsed().as_millis() as u64;
             if elapsed >= REFRESH_DEBOUNCE_MS || ret == 0 {
-                render_terminal(&mut fb, &term, scale, 0);
+                render_terminal(&mut fb, &term, scale);
                 render_status_bar(&mut fb, &term, scale, term_area_height, display_target);
                 let (min_row, min_col, max_row, max_col) = term.mark_clean();
 

@@ -632,7 +632,7 @@ impl Terminal {
 
     fn finish_params_pair(&mut self, def1: u32, def2: u32) -> (u32, u32) {
         self.finish_params();
-        let a = if self.params.len() > 0 && self.params[0] != 0 {
+        let a = if !self.params.is_empty() && self.params[0] != 0 {
             self.params[0]
         } else {
             def1
