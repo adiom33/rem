@@ -2,6 +2,7 @@ mod font;
 mod framebuffer;
 mod input;
 mod keyboard;
+mod launcher;
 mod pty;
 mod setup;
 #[allow(non_camel_case_types, dead_code)]
@@ -47,6 +48,7 @@ fn print_usage() {
     eprintln!("  --cmd STRING    Remote command to run via SSH");
     eprintln!("  --ssh-args ARGS Extra arguments passed to SSH (comma-separated)");
     eprintln!("  --ssh-arg ARG   Extra SSH argument (repeatable)");
+    eprintln!("  --launcher      Show boot menu (Terminal / Reader chooser)");
     eprintln!("  --setup         Auto-detect rm2fb addresses and write /etc/rm2fb.conf");
     eprintln!("  --help          Show this help");
     eprintln!();
@@ -72,6 +74,7 @@ struct Config {
     tmux: bool,
     remote_cmd: Option<String>,
     ssh_extra_args: Vec<String>,
+    launcher: bool,
 }
 
 fn parse_args() -> Config {
@@ -87,6 +90,7 @@ fn parse_args() -> Config {
         tmux: false,
         remote_cmd: None,
         ssh_extra_args: Vec::new(),
+        launcher: false,
     };
 
     let mut i = 1;
@@ -150,6 +154,9 @@ fn parse_args() -> Config {
                 if i < args.len() {
                     config.ssh_extra_args.push(args[i].clone());
                 }
+            }
+            "--launcher" => {
+                config.launcher = true;
             }
             "--setup" => {
                 // Run rm2fb auto-setup and exit
@@ -310,8 +317,66 @@ fn stop_xochitl() {
     }));
 }
 
+fn run_launcher_mode(config: &Config) {
+    // Collect args to forward to the terminal subprocess (everything except --launcher)
+    let forward_args: Vec<String> = env::args()
+        .skip(1)
+        .filter(|a| a != "--launcher")
+        .collect();
+
+    let exe = env::current_exe()
+        .unwrap_or_else(|_| std::path::PathBuf::from("/home/root/remarkable-ssh"));
+
+    loop {
+        let mut fb = match Framebuffer::open(&config.fb_path) {
+            Ok(fb) => fb,
+            Err(e) => {
+                eprintln!("Launcher: {}", e);
+                std::thread::sleep(std::time::Duration::from_secs(5));
+                continue;
+            }
+        };
+
+        eprintln!("Launcher: showing menu (backend: {})", fb.backend_name());
+
+        match launcher::run(&mut fb) {
+            launcher::LauncherChoice::Terminal => {
+                drop(fb);
+                eprintln!("Launcher: starting terminal...");
+                let _ = std::process::Command::new(&exe)
+                    .args(&forward_args)
+                    .status();
+                eprintln!("Launcher: terminal exited, returning to menu.");
+                // Brief pause to let e-ink settle before re-drawing
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+            launcher::LauncherChoice::Reader => {
+                fb.clear();
+                fb.refresh_full();
+                drop(fb);
+                eprintln!("Launcher: switching to reader.");
+                // Ensure xochitl is running (it should already be for rm2fb)
+                let cmd = b"systemctl start xochitl 2>/dev/null || true\0";
+                unsafe {
+                    sys::system(cmd.as_ptr() as *const sys::c_char);
+                }
+                // Exit cleanly — xochitl re-renders on next touch.
+                // To return to the launcher: reboot, or
+                //   ssh root@tablet 'systemctl restart remarkable-launcher'
+                std::process::exit(0);
+            }
+        }
+    }
+}
+
 fn main() {
     let config = parse_args();
+
+    // ---- Launcher mode ----
+    if config.launcher {
+        run_launcher_mode(&config);
+        return;
+    }
 
     // ---- Open framebuffer ----
     let mut fb = match Framebuffer::open(&config.fb_path) {
