@@ -3,7 +3,12 @@
 # install.sh — One-click install of remarkable-ssh on reMarkable 2
 #
 # Usage:
-#   ./scripts/install.sh [TABLET_IP]
+#   ./scripts/install.sh [TABLET_IP] [SSH_TARGET]
+#
+# Examples:
+#   ./scripts/install.sh                                # defaults
+#   ./scripts/install.sh 10.11.99.1                     # just tablet IP
+#   ./scripts/install.sh 10.11.99.1 user@myserver       # saves SSH target for quick launch
 #
 # This script:
 #   1. Builds the remarkable-ssh binary for ARM
@@ -12,15 +17,20 @@
 #   4. Checks if rm2fb server .so is present
 #   5. Configures systemd to start xochitl with rm2fb
 #   6. Restarts xochitl with rm2fb enabled
+#   7. Deploys a 'term' launcher script for quick launch from phone/SSH
 #
 # After this, just run:
 #   ./scripts/run-remote.sh TABLET_IP user@your-server
+# Or from your phone:
+#   ssh root@TABLET_IP ./term
 #
 set -euo pipefail
 
 TABLET_IP="${1:-10.11.99.1}"
+SSH_TARGET="${2:-}"
 SSH_OPTS=(-o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new)
 REMOTE_BIN="/home/root/remarkable-ssh"
+REMOTE_LAUNCHER="/home/root/term"
 RM2FB_RELEASE_URL="https://github.com/ddvk/remarkable2-framebuffer/releases/latest/download"
 
 run_remote() {
@@ -47,7 +57,7 @@ echo "  Firmware: $FIRMWARE_VER"
 echo ""
 
 # ---- Step 1: Build ----
-echo "[1/5] Building remarkable-ssh..."
+echo "[1/6] Building remarkable-ssh..."
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 "${SCRIPT_DIR}/build.sh" || {
     echo "ERROR: Build failed. See errors above."
@@ -56,7 +66,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 echo ""
 
 # ---- Step 2: Deploy binary ----
-echo "[2/5] Deploying to tablet..."
+echo "[2/6] Deploying to tablet..."
 "${SCRIPT_DIR}/deploy.sh" "$TABLET_IP" || {
     echo "ERROR: Deploy failed. See errors above."
     exit 1
@@ -64,7 +74,7 @@ echo "[2/5] Deploying to tablet..."
 echo ""
 
 # ---- Step 3: Check if rm2fb server .so exists ----
-echo "[3/5] Checking rm2fb server..."
+echo "[3/6] Checking rm2fb server..."
 HAS_SERVER=$(run_remote 'ls /opt/lib/librm2fb_server.so* 2>/dev/null | head -1 || echo ""')
 
 if [ -z "$HAS_SERVER" ]; then
@@ -121,7 +131,7 @@ fi
 echo ""
 
 # ---- Step 4: Auto-extract rm2fb addresses ----
-echo "[4/5] Extracting rm2fb function addresses from xochitl..."
+echo "[4/6] Extracting rm2fb function addresses from xochitl..."
 echo "  Running: remarkable-ssh --setup"
 echo ""
 
@@ -141,7 +151,7 @@ else
 fi
 
 # ---- Step 5: Configure systemd and restart xochitl ----
-echo "[5/5] Configuring systemd..."
+echo "[5/6] Configuring systemd..."
 
 # Check that we have both the .conf and the .so before proceeding
 HAS_CONF=$(run_remote 'test -f /etc/rm2fb.conf && echo yes || echo no')
@@ -184,11 +194,63 @@ else
     echo "  Fix the issues above and re-run this script."
 fi
 
+# ---- Step 6: Deploy launcher script ----
+echo ""
+echo "[6/6] Deploying launcher script..."
+
+# Build the launcher script content
+# If the user gave us an SSH target, bake it in as the default
+if [ -n "$SSH_TARGET" ]; then
+    LAUNCHER_DEFAULT="$SSH_TARGET"
+else
+    LAUNCHER_DEFAULT=""
+fi
+
+# Generate the launcher script locally and deploy via stdin
+ssh "${SSH_OPTS[@]}" "root@${TABLET_IP}" "cat > $REMOTE_LAUNCHER && chmod +x $REMOTE_LAUNCHER" <<LAUNCHER_EOF
+#!/bin/sh
+# Quick launcher for remarkable-ssh.
+# Run:  ./term                   (uses saved default target)
+#       ./term user@otherhost    (override target)
+#       ./term --keyboard        (with on-screen keyboard)
+#
+# Edit DEFAULT_TARGET below to change your default server.
+
+DEFAULT_TARGET="${LAUNCHER_DEFAULT}"
+
+# If the user passed arguments, use them. Otherwise use the default.
+if [ \$# -gt 0 ]; then
+    exec /home/root/remarkable-ssh "\$@"
+elif [ -n "\$DEFAULT_TARGET" ]; then
+    exec /home/root/remarkable-ssh "\$DEFAULT_TARGET"
+else
+    echo "Usage: ./term [user@host] [OPTIONS]"
+    echo ""
+    echo "No default SSH target configured."
+    echo "Edit /home/root/term and set DEFAULT_TARGET, or pass a target:"
+    echo "  ./term user@your-server"
+    exit 1
+fi
+LAUNCHER_EOF
+
+if [ -n "$SSH_TARGET" ]; then
+    echo "  Launcher deployed: $REMOTE_LAUNCHER (default: $SSH_TARGET)"
+else
+    echo "  Launcher deployed: $REMOTE_LAUNCHER (no default target)"
+    echo "  To set a default: ssh root@$TABLET_IP and edit $REMOTE_LAUNCHER"
+fi
+
 echo ""
 echo "=== Install Complete ==="
 echo ""
-echo "To use:"
+echo "To use from your computer:"
 echo "  ./scripts/run-remote.sh $TABLET_IP user@your-server-ip"
+echo ""
+echo "To use from your phone (no computer needed):"
+echo "  ssh root@$TABLET_IP ./term"
+if [ -n "$SSH_TARGET" ]; then
+    echo "  (will connect to $SSH_TARGET by default)"
+fi
 echo ""
 echo "To use with options:"
 echo "  ./scripts/run-remote.sh $TABLET_IP user@server --tmux --keyboard"

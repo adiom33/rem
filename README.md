@@ -8,11 +8,14 @@ your reMarkable goes right back to being an e-reader.
 
 ## What You Need
 
-**Three things:**
+**For initial setup (one time):**
 
 1. **A reMarkable 2 tablet** (with optional Type Folio keyboard, or use the on-screen keyboard)
 2. **A computer to build and copy the app** (Linux, Mac, or Windows with WSL)
 3. **A machine to SSH into** (your home server, a VPS, a Raspberry Pi, etc.)
+
+**After setup:** You don't need the computer anymore. Launch the terminal
+from your phone or any SSH client. See [Using Without a Computer](#using-without-a-computer).
 
 ## How It Works
 
@@ -46,13 +49,17 @@ If you have Rust and Docker installed:
 git clone https://github.com/adiom33/rem.git
 cd rem
 cargo install cross                       # Docker-based ARM cross-compiler
-./scripts/install.sh 10.11.99.1           # Build, deploy, auto-configure rm2fb
-./scripts/run-remote.sh 10.11.99.1 user@your-server-ip
+./scripts/install.sh 10.11.99.1 user@your-server-ip   # One-time setup
+./scripts/run-remote.sh 10.11.99.1 user@your-server-ip # Launch terminal
 ```
 
-`install.sh` does everything: builds the binary, deploys it, auto-extracts
-rm2fb addresses from your tablet's xochitl binary, writes the config, and
-sets up the display backend. After that, `run-remote.sh` is all you need.
+> **Docker is required for `cross`.** Install it from [docker.com](https://docs.docker.com/get-docker/)
+> and make sure the Docker daemon is running (`docker ps` should work without errors).
+> If you don't want Docker, see [Step 3](#step-3-install-rust-and-build) for alternatives.
+
+`install.sh` is a **one-time setup** — it builds the binary, deploys it,
+auto-extracts rm2fb addresses, writes the config, and sets up the display
+backend. After that, `run-remote.sh` is all you need each time.
 
 First time? Read on for the detailed setup.
 
@@ -85,10 +92,14 @@ ssh root@10.11.99.1
 
 ### Step 3: Install Rust and Build
 
-You need two things on your computer: **Rust** and **`cross`** (a Docker-based
-ARM cross-compiler). This is a one-time setup.
+You need three things on your computer: **Rust**, **Docker**, and **`cross`**
+(a Docker-based ARM cross-compiler). This is a one-time setup.
 
 ```bash
+# Install Docker (if you don't have it) — see https://docs.docker.com/get-docker/
+# Verify Docker is running:
+docker ps
+
 # Install Rust (if you don't have it)
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source ~/.cargo/env
@@ -102,6 +113,7 @@ cargo install cross
 > - Mac: `brew install filosottile/musl-cross/musl-cross`
 >
 > The build script auto-detects whatever you have installed.
+> With this method you don't need Docker or `cross` at all.
 
 Then clone and build:
 
@@ -114,35 +126,62 @@ cd rem
 The build script handles everything — picks the right compiler, adds the ARM
 target, and produces a static binary. No manual `rustup target add` needed.
 
-### Step 4: Run It
+### Step 3b: Connect Your reMarkable to WiFi
 
-**Option A: All-in-one (build + deploy + run)**
+The USB cable connects your computer to the tablet, but the **tablet also needs
+WiFi** to reach the server you want to SSH into.
+
+On the reMarkable: **Settings > Wi-Fi** and connect to your network. The tablet
+will use WiFi for the outbound SSH connection to your server, even while plugged
+in via USB.
+
+> **First SSH connection:** The first time the terminal connects to your server,
+> it will ask you to accept the host key and enter your password. This works
+> fine through the on-screen or Type Folio keyboard. To skip the password prompt
+> in the future, set up SSH key authentication on your server.
+
+### Step 4: Install (one time)
+
+Run the install script with your tablet plugged in via USB:
 
 ```bash
-# Plug in reMarkable via USB, then:
+./scripts/install.sh 10.11.99.1
+```
+
+This builds the binary, deploys it to the tablet, auto-extracts rm2fb
+addresses, and configures the display backend. **You only need to do this once**
+(or again after updating the code).
+
+### Step 5: Run It (every time)
+
+**Option A: From your computer** (USB cable connected)
+
+```bash
 ./scripts/run-remote.sh 10.11.99.1 user@your-server-ip
 
 # With extras:
 ./scripts/run-remote.sh 10.11.99.1 user@your-server-ip --tmux --keyboard
 ```
 
-This does everything: builds, copies to the tablet, SSHes in, runs the terminal,
-and restarts the reMarkable UI when you're done. You can append any flags after
-the server address.
+This SSHes into the tablet, runs the terminal, and restarts the reMarkable
+UI when you're done.
 
-**Option B: Deploy and run separately**
+**Option B: From your phone** (no computer needed)
+
+See [Using Without a Computer](#using-without-a-computer) below.
+
+**Option C: Directly on the tablet**
 
 ```bash
-# Copy the binary to the tablet
-./scripts/deploy.sh 10.11.99.1
-
-# SSH into your reMarkable and run it
+# SSH into your reMarkable from any device
 ssh root@10.11.99.1
+
+# Run the terminal
 /home/root/remarkable-ssh user@your-server-ip
 ```
 
-When you exit the SSH session (type `exit` or press Ctrl+D), the app
-cleans up and restarts the normal reMarkable UI automatically.
+When you exit (type `exit` or press Ctrl+D), the app cleans up and
+restarts the normal reMarkable UI automatically.
 
 ## Usage
 
@@ -204,6 +243,53 @@ because you can:
 
 The `--tmux` flag automatically runs `tmux attach || tmux new -s main` on the
 remote machine, so it reconnects to an existing session or creates a new one.
+
+## Using Without a Computer
+
+Once the app is installed on your tablet, you don't need a computer to launch
+it. You can start the terminal from your phone, another tablet, or anything
+with an SSH client.
+
+### From your phone
+
+1. Install an SSH app (e.g. Termius, JuiceSSH on Android, or Blink/Termius on iOS)
+2. Connect to your reMarkable: `root@10.11.99.1` (USB) or the tablet's WiFi IP
+3. Run: `./term`
+
+That's it. The `term` launcher was deployed by `install.sh`. If you gave it
+an SSH target during install (`./scripts/install.sh 10.11.99.1 user@myserver`),
+it will connect to that server automatically. Otherwise pass it as an argument:
+
+```bash
+./term user@myserver                    # connect to your server
+./term user@myserver --tmux             # with tmux
+./term --keyboard user@myserver         # with on-screen keyboard
+```
+
+> **Tip:** Your reMarkable's WiFi IP is in **Settings > Wi-Fi > your network**.
+> Use that IP instead of `10.11.99.1` to connect over WiFi without a USB cable.
+
+### Changing your default server
+
+SSH into the tablet and edit the launcher:
+
+```bash
+ssh root@10.11.99.1
+vi /home/root/term
+# Change the DEFAULT_TARGET line to your server
+```
+
+Or re-run install with the new target:
+
+```bash
+./scripts/install.sh 10.11.99.1 user@new-server
+```
+
+### What happens when you exit
+
+When you close the terminal (Ctrl+D, `exit`, or disconnect), the app
+automatically restarts the normal reMarkable UI (xochitl). Your tablet goes
+right back to being an e-reader. No manual cleanup needed.
 
 ## Keyboard Support
 
@@ -392,7 +478,7 @@ rem/
     pty.rs                # Pseudo-terminal (PTY) and child process management
     sys.rs                # Raw Linux syscall bindings (replaces libc crate)
   scripts/
-    install.sh            # One-click: build + deploy + auto-configure rm2fb
+    install.sh            # One-click: build + deploy + auto-configure rm2fb + launcher
     build.sh              # Cross-compile for ARM (reMarkable hardware)
     deploy.sh             # Copy binary to reMarkable via USB
     run-remote.sh         # Build + deploy + run, all in one command
