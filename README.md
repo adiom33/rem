@@ -49,12 +49,18 @@ One-time setup from your computer (Rust + Docker required):
 git clone https://github.com/adiom33/rem.git
 cd rem
 cargo install cross                       # Docker-based ARM cross-compiler
-./scripts/install.sh 10.11.99.1 user@your-server-ip   # Build, deploy, configure
+./scripts/install.sh 10.11.99.1           # Build, deploy, configure
 ```
 
-That's it. **Reboot the tablet** and the terminal starts automatically,
-connected to your server. When you exit the terminal (Ctrl+D or `exit`),
-the e-reader comes back. Reboot again to get the terminal.
+That's it. **Reboot the tablet** and you get a terminal. From there, SSH
+into your server:
+
+```
+ssh user@your-server
+```
+
+When you exit (Ctrl+D or `exit`), the e-reader comes back. Reboot again
+to get the terminal.
 
 > **Docker is required for `cross`.** Install it from [docker.com](https://docs.docker.com/get-docker/)
 > and make sure the Docker daemon is running (`docker ps` should work without errors).
@@ -139,25 +145,30 @@ in via USB.
 > fine through the on-screen or Type Folio keyboard. To skip the password prompt
 > in the future, set up SSH key authentication on your server.
 
-### Step 4: Install and Configure (one time)
+### Step 4: Install (one time)
 
-Run the install script with your tablet plugged in via USB. Pass your SSH
-target as the second argument to enable standalone mode:
+Run the install script with your tablet plugged in via USB:
 
 ```bash
-./scripts/install.sh 10.11.99.1 user@your-server-ip
+./scripts/install.sh 10.11.99.1
 ```
 
 This builds the binary, deploys it, configures rm2fb, and sets up the
-tablet to boot directly into the terminal. **You only need to do this once**
-(or again after updating the code or changing your SSH target).
+tablet to boot into the terminal. **You only need to do this once**
+(or again after updating the code).
 
 ### Step 5: Use It
 
-**Reboot the tablet.** The terminal starts automatically and connects to
-your server. No computer, no phone, nothing else needed.
+**Reboot the tablet.** You get a shell prompt on the e-ink screen.
+From there, connect to your server:
 
-When you're done, exit the terminal (type `exit` or press Ctrl+D). The
+```
+ssh user@your-server
+# or with dropbear (if ssh isn't available):
+dbclient user@your-server
+```
+
+When you're done, exit the shell (type `exit` or press Ctrl+D). The
 e-reader comes back. Reboot again to get the terminal.
 
 See [Standalone Mode](#standalone-mode) for more details on switching modes.
@@ -234,20 +245,23 @@ remote machine, so it reconnects to an existing session or creates a new one.
 
 ## Standalone Mode
 
-Once installed with an SSH target, the tablet works as a standalone terminal.
-No computer or phone needed — just pick it up and use it.
+After install, the tablet boots directly into a terminal. No computer or
+phone needed — just pick it up, type `ssh user@server`, and you're in.
 
 ### How it works
 
 ```
-Boot tablet → Terminal starts → SSH to your server → Work → Exit → E-reader returns
-                                                                    ↓
-                                                              Reboot → Terminal again
+Boot tablet → Shell prompt → You type: ssh user@server → Work → Exit → E-reader
+                                                                         ↓
+                                                                   Reboot → Shell again
 ```
 
 The install script sets up a systemd service (`remarkable-ssh.service`) that
-starts the terminal on boot instead of the normal e-reader UI. When the
-terminal exits, the e-reader (xochitl) starts automatically.
+runs the terminal on boot instead of the normal e-reader UI. The terminal
+gives you a local shell on the reMarkable. From there you can SSH into
+any server, run local commands, or do whatever you'd do in a terminal.
+
+When the shell exits, the e-reader (xochitl) starts automatically.
 
 ### Switching between terminal and e-reader
 
@@ -264,34 +278,16 @@ ssh root@10.11.99.1 ./term-mode off
 ssh root@10.11.99.1 ./term-mode on
 ```
 
-### Changing your SSH target
-
-Re-run install with the new target:
-
-```bash
-./scripts/install.sh 10.11.99.1 user@new-server
-```
-
-Or edit it directly on the tablet:
-
-```bash
-ssh root@10.11.99.1
-vi /home/root/term                  # change DEFAULT_TARGET for the launcher
-# For boot-to-terminal, also update the systemd service:
-vi /etc/systemd/system/remarkable-ssh.service   # change ExecStart line
-systemctl daemon-reload
-```
-
 ### Manual launch (without boot-to-terminal)
 
-If you prefer not to use boot-to-terminal, you can launch manually:
+If you prefer the e-reader as default and only want the terminal on demand:
 
 ```bash
-# From your phone (SSH app like Termius, JuiceSSH, Blink):
-ssh root@10.11.99.1 ./term
+# Disable boot-to-terminal
+ssh root@10.11.99.1 ./term-mode off
 
-# Or with options:
-ssh root@10.11.99.1 './term user@server --tmux --keyboard'
+# Then launch manually when you want it (from phone/computer):
+ssh root@10.11.99.1 ./term
 ```
 
 > **Tip:** Your reMarkable's WiFi IP is in **Settings > Wi-Fi > your network**.

@@ -3,12 +3,7 @@
 # install.sh — One-click install of remarkable-ssh on reMarkable 2
 #
 # Usage:
-#   ./scripts/install.sh [TABLET_IP] [SSH_TARGET]
-#
-# Examples:
-#   ./scripts/install.sh                                # defaults
-#   ./scripts/install.sh 10.11.99.1                     # just tablet IP
-#   ./scripts/install.sh 10.11.99.1 user@myserver       # saves SSH target for quick launch
+#   ./scripts/install.sh [TABLET_IP]
 #
 # This script:
 #   1. Builds the remarkable-ssh binary for ARM
@@ -16,18 +11,17 @@
 #   3. Checks if rm2fb server .so is present
 #   4. Auto-extracts rm2fb addresses from xochitl
 #   5. Configures systemd for rm2fb + xochitl
-#   6. Deploys launcher, systemd service, and term-mode toggle
+#   6. Deploys launcher, systemd service, and enables boot-to-terminal
 #
-# If SSH_TARGET is given, enables boot-to-terminal mode:
-#   reboot the tablet → terminal starts → exit → e-reader returns
-#
-# Without SSH_TARGET, deploys everything but doesn't auto-enable.
-# Use run-remote.sh or enable manually: ./term-mode on
+# After install, reboot the tablet:
+#   → Terminal starts (local shell)
+#   → SSH into your server from the shell
+#   → Exit when done → e-reader returns
+#   → Reboot → terminal again
 #
 set -euo pipefail
 
 TABLET_IP="${1:-10.11.99.1}"
-SSH_TARGET="${2:-}"
 SSH_OPTS=(-o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new)
 REMOTE_BIN="/home/root/remarkable-ssh"
 REMOTE_LAUNCHER="/home/root/term"
@@ -198,49 +192,26 @@ fi
 echo ""
 echo "[6/6] Setting up on-device launcher..."
 
-# Build args for the binary
-TERM_ARGS=""
-if [ -n "$SSH_TARGET" ]; then
-    TERM_ARGS="$SSH_TARGET"
-fi
-
-# Deploy the launcher script (for manual use / SSH from phone)
-ssh "${SSH_OPTS[@]}" "root@${TABLET_IP}" "cat > $REMOTE_LAUNCHER && chmod +x $REMOTE_LAUNCHER" <<LAUNCHER_EOF
+# Deploy the launcher script (starts a local shell; pass args to connect somewhere)
+ssh "${SSH_OPTS[@]}" "root@${TABLET_IP}" "cat > $REMOTE_LAUNCHER && chmod +x $REMOTE_LAUNCHER" <<'LAUNCHER_EOF'
 #!/bin/sh
-# Quick launcher for remarkable-ssh.
-# Run:  ./term                   (uses saved default target)
-#       ./term user@otherhost    (override target)
-#       ./term --keyboard        (with on-screen keyboard)
-#
-# Edit DEFAULT_TARGET below to change your default server.
-
-DEFAULT_TARGET="${TERM_ARGS}"
-
-# If the user passed arguments, use them. Otherwise use the default.
-if [ \$# -gt 0 ]; then
-    exec /home/root/remarkable-ssh "\$@"
-elif [ -n "\$DEFAULT_TARGET" ]; then
-    exec /home/root/remarkable-ssh "\$DEFAULT_TARGET"
-else
-    echo "Usage: ./term [user@host] [OPTIONS]"
-    echo ""
-    echo "No default SSH target configured."
-    echo "Edit /home/root/term and set DEFAULT_TARGET, or pass a target:"
-    echo "  ./term user@your-server"
-    exit 1
-fi
+# Launch remarkable-ssh.
+# Run:  ./term                          (local shell)
+#       ./term user@server              (SSH to a server)
+#       ./term --keyboard user@server   (with on-screen keyboard)
+exec /home/root/remarkable-ssh "$@"
 LAUNCHER_EOF
 echo "  Launcher script deployed: $REMOTE_LAUNCHER"
 
-# Deploy the systemd service for boot-to-terminal mode
-ssh "${SSH_OPTS[@]}" "root@${TABLET_IP}" "cat > /etc/systemd/system/remarkable-ssh.service" <<SERVICE_EOF
+# Deploy the systemd service — boots to a local shell (no auto-connect)
+ssh "${SSH_OPTS[@]}" "root@${TABLET_IP}" "cat > /etc/systemd/system/remarkable-ssh.service" <<'SERVICE_EOF'
 [Unit]
 Description=remarkable-ssh terminal
 After=basic.target
 
 [Service]
 Type=simple
-ExecStart=/home/root/remarkable-ssh ${TERM_ARGS}
+ExecStart=/home/root/remarkable-ssh
 ExecStopPost=/bin/sh -c 'systemctl start xochitl 2>/dev/null || true'
 Restart=no
 StandardInput=null
@@ -288,42 +259,31 @@ esac
 TOGGLE_EOF
 echo "  Mode toggle deployed: /home/root/term-mode"
 
-# Enable terminal mode if we have an SSH target
+# Enable terminal mode
 run_remote 'systemctl daemon-reload'
-if [ -n "$SSH_TARGET" ]; then
-    echo ""
-    echo "  Enabling terminal mode (boots to terminal)..."
-    run_remote 'systemctl disable xochitl 2>/dev/null; systemctl enable remarkable-ssh 2>/dev/null' || true
-    echo "  Terminal mode enabled! On next boot, the terminal starts automatically."
-    echo "  To switch back: ssh root@$TABLET_IP ./term-mode off"
-else
-    echo ""
-    echo "  No SSH target given — skipping auto-enable."
-    echo "  To enable boot-to-terminal mode later:"
-    echo "    1. Edit /home/root/term on the tablet (set DEFAULT_TARGET)"
-    echo "    2. Run: ./term-mode on"
-fi
+echo ""
+echo "  Enabling terminal mode (boots to shell)..."
+run_remote 'systemctl disable xochitl 2>/dev/null; systemctl enable remarkable-ssh 2>/dev/null' || true
+echo "  Done! On next boot, the terminal starts automatically."
+echo "  To switch back: ssh root@$TABLET_IP ./term-mode off"
 
 echo ""
 echo "=== Install Complete ==="
 echo ""
-if [ -n "$SSH_TARGET" ]; then
-    echo "Your reMarkable is now a standalone SSH terminal."
-    echo ""
-    echo "  Reboot the tablet to start the terminal automatically."
-    echo "  When you exit the terminal, the e-reader comes back."
-    echo "  Reboot again to get the terminal back."
-    echo ""
-    echo "To switch modes:"
-    echo "  ssh root@$TABLET_IP ./term-mode off   # back to e-reader on boot"
-    echo "  ssh root@$TABLET_IP ./term-mode on    # terminal on boot"
-else
-    echo "To use from your computer:"
-    echo "  ./scripts/run-remote.sh $TABLET_IP user@your-server-ip"
-    echo ""
-    echo "To enable standalone mode (no computer needed):"
-    echo "  ./scripts/install.sh $TABLET_IP user@your-server-ip"
-fi
+echo "Your reMarkable is now a standalone terminal."
+echo ""
+echo "  Reboot the tablet to start."
+echo "  You'll get a shell — from there, ssh into your server:"
+echo "    ssh user@your-server"
+echo "    # or with dropbear:"
+echo "    dbclient user@your-server"
+echo ""
+echo "  When you exit the shell, the e-reader comes back."
+echo "  Reboot again to get the terminal back."
+echo ""
+echo "To switch modes:"
+echo "  ssh root@$TABLET_IP ./term-mode off   # back to e-reader on boot"
+echo "  ssh root@$TABLET_IP ./term-mode on    # terminal on boot"
 echo ""
 echo "To undo everything:"
 echo "  ssh root@$TABLET_IP './term-mode off; rm /etc/systemd/system/remarkable-ssh.service; rm /etc/systemd/system/xochitl.service.d/rm2fb.conf; systemctl daemon-reload; systemctl restart xochitl'"
