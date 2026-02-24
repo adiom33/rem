@@ -486,6 +486,7 @@ rem/
     keyboard.rs           # Physical keyboard + on-screen keyboard
     input.rs              # Touchscreen and pen input handling
     pty.rs                # Pseudo-terminal (PTY) and child process management
+    setup.rs              # rm2fb auto-setup: ELF parser + address extraction
     sys.rs                # Raw Linux syscall bindings (replaces libc crate)
   scripts/
     install.sh            # One-click: build + deploy + configure + enable standalone
