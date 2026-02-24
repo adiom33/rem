@@ -31,7 +31,7 @@ set -euo pipefail
 TABLET_IP="${1:-10.11.99.1}"
 WORK_DIR="$(mktemp -d)"
 XOCHITL="$WORK_DIR/xochitl"
-SSH_OPTS="-o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new"
+SSH_OPTS=(-o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new)
 
 cleanup() {
     rm -rf "$WORK_DIR"
@@ -43,7 +43,7 @@ echo ""
 
 # ---- Step 1: Pull xochitl and firmware version ----
 echo "[1/4] Pulling xochitl binary from $TABLET_IP..."
-scp $SSH_OPTS "root@${TABLET_IP}:/usr/bin/xochitl" "$XOCHITL" || {
+scp "${SSH_OPTS[@]}" "root@${TABLET_IP}:/usr/bin/xochitl" "$XOCHITL" || {
     echo "ERROR: Cannot copy /usr/bin/xochitl from tablet."
     echo "  Make sure:"
     echo "  - The tablet is connected via USB (IP: 10.11.99.1)"
@@ -51,7 +51,7 @@ scp $SSH_OPTS "root@${TABLET_IP}:/usr/bin/xochitl" "$XOCHITL" || {
     exit 1
 }
 
-FIRMWARE_VER=$(ssh $SSH_OPTS "root@${TABLET_IP}" \
+FIRMWARE_VER=$(ssh "${SSH_OPTS[@]}" "root@${TABLET_IP}" \
     'grep REMARKABLE_RELEASE_VERSION /usr/share/remarkable/update.conf 2>/dev/null | cut -d= -f2 || cat /etc/version 2>/dev/null || echo unknown' \
 ) || FIRMWARE_VER="unknown"
 FIRMWARE_VER=$(echo "$FIRMWARE_VER" | tr -d '[:space:]')

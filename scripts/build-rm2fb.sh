@@ -20,12 +20,12 @@
 set -euo pipefail
 
 TABLET_IP="${1:-10.11.99.1}"
-SSH_OPTS="-o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new"
+SSH_OPTS=(-o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new)
 WORK_DIR="$(pwd)/rm2fb-build"
 RM2FB_REPO="https://github.com/ddvk/remarkable2-framebuffer.git"
 
 run_remote() {
-    ssh $SSH_OPTS "root@${TABLET_IP}" "$@"
+    ssh "${SSH_OPTS[@]}" "root@${TABLET_IP}" "$@"
 }
 
 echo "=== rm2fb Source Build ==="
@@ -132,7 +132,7 @@ echo ""
 # ---- Step 3: Pull xochitl and find addresses ----
 echo "[3/6] Extracting function addresses from xochitl..."
 XOCHITL="$WORK_DIR/xochitl"
-scp $SSH_OPTS "root@${TABLET_IP}:/usr/bin/xochitl" "$XOCHITL"
+scp "${SSH_OPTS[@]}" "root@${TABLET_IP}:/usr/bin/xochitl" "$XOCHITL"
 
 # Search for marker strings
 echo "  Searching for rm2fb marker strings..."

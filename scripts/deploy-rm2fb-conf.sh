@@ -34,13 +34,13 @@ TABLET_IP="$1"
 UPDATE_ADDR="$2"
 CREATE_ADDR="$3"
 SERVER_SO="${4:-}"
-SSH_OPTS="-o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new"
+SSH_OPTS=(-o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new)
 
 echo "=== rm2fb Configuration Deployer ==="
 echo ""
 
 # Get firmware version
-FIRMWARE_VER=$(ssh $SSH_OPTS "root@${TABLET_IP}" \
+FIRMWARE_VER=$(ssh "${SSH_OPTS[@]}" "root@${TABLET_IP}" \
     'grep REMARKABLE_RELEASE_VERSION /usr/share/remarkable/update.conf 2>/dev/null | cut -d= -f2 || cat /etc/version 2>/dev/null || echo unknown' \
 ) || FIRMWARE_VER="unknown"
 FIRMWARE_VER=$(echo "$FIRMWARE_VER" | tr -d '[:space:]')
@@ -63,7 +63,7 @@ create=$CREATE_ADDR
 EOF
 
 echo "[1/3] Deploying rm2fb.conf..."
-scp $SSH_OPTS "$CONF_FILE" "root@${TABLET_IP}:/etc/rm2fb.conf"
+scp "${SSH_OPTS[@]}" "$CONF_FILE" "root@${TABLET_IP}:/etc/rm2fb.conf"
 rm -f "$CONF_FILE"
 echo "  -> /etc/rm2fb.conf deployed"
 
@@ -75,9 +75,9 @@ if [ -n "$SERVER_SO" ]; then
         echo "ERROR: Server .so not found: $SERVER_SO"
         exit 1
     fi
-    ssh $SSH_OPTS "root@${TABLET_IP}" 'mkdir -p /opt/lib'
-    scp $SSH_OPTS "$SERVER_SO" "root@${TABLET_IP}:/opt/lib/librm2fb_server.so.1.0.1"
-    ssh $SSH_OPTS "root@${TABLET_IP}" 'cd /opt/lib && ln -sf librm2fb_server.so.1.0.1 librm2fb_server.so.1 && ln -sf librm2fb_server.so.1 librm2fb_server.so'
+    ssh "${SSH_OPTS[@]}" "root@${TABLET_IP}" 'mkdir -p /opt/lib'
+    scp "${SSH_OPTS[@]}" "$SERVER_SO" "root@${TABLET_IP}:/opt/lib/librm2fb_server.so.1.0.1"
+    ssh "${SSH_OPTS[@]}" "root@${TABLET_IP}" 'cd /opt/lib && ln -sf librm2fb_server.so.1.0.1 librm2fb_server.so.1 && ln -sf librm2fb_server.so.1 librm2fb_server.so'
     echo "  -> /opt/lib/librm2fb_server.so deployed"
 else
     echo ""
@@ -88,7 +88,7 @@ fi
 # Check if server .so exists on tablet
 echo ""
 echo "[3/3] Verifying rm2fb server on tablet..."
-HAS_SERVER=$(ssh $SSH_OPTS "root@${TABLET_IP}" 'ls /opt/lib/librm2fb_server.so* 2>/dev/null | head -1 || echo ""')
+HAS_SERVER=$(ssh "${SSH_OPTS[@]}" "root@${TABLET_IP}" 'ls /opt/lib/librm2fb_server.so* 2>/dev/null | head -1 || echo ""')
 if [ -z "$HAS_SERVER" ]; then
     echo "WARNING: No rm2fb server library found on the tablet!"
     echo "  You need librm2fb_server.so from:"

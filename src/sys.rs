@@ -46,9 +46,6 @@ pub const SIGHUP: c_int = 1;
 pub const SIGINT: c_int = 2;
 pub const SIGTERM: c_int = 15;
 
-// signal handling
-pub const SIG_DFL: usize = 0;
-
 // For sigaction-based signal handling
 pub type sighandler_t = extern "C" fn(c_int);
 
@@ -81,16 +78,6 @@ pub const IPC_NOWAIT: c_int = 0o4000;
 
 // rm2fb message queue key
 pub const RM2FB_MSG_KEY: key_t = 0x2257c;
-
-// fstat
-pub type off_t = c_long;
-pub type dev_t = u64;
-pub type ino_t = c_ulong;
-pub type blksize_t = c_long;
-pub type blkcnt_t = c_long;
-
-// open flags
-pub const O_RDONLY: c_int = 0x00;
 
 // ---- Structures ----
 
@@ -163,21 +150,11 @@ extern "C" {
     // Error
     pub fn __errno_location() -> *mut c_int;
 
-    // String
-    pub fn memset(s: *mut c_void, c: c_int, n: size_t) -> *mut c_void;
-
-    // Sleep
-    pub fn usleep(usec: c_uint) -> c_int;
-
     // Signal handling
     pub fn signal(signum: c_int, handler: sighandler_t) -> usize;
 
     // System command execution
     pub fn system(command: *const c_char) -> c_int;
-
-    // File info
-    pub fn fstat(fd: c_int, buf: *mut c_void) -> c_int;
-    pub fn ftruncate(fd: c_int, length: off_t) -> c_int;
 
     // Sys V IPC (message queues — used for rm2fb)
     pub fn msgget(key: key_t, msgflg: c_int) -> c_int;
@@ -204,12 +181,5 @@ pub fn errno_str() -> &'static str {
         22 => "EINVAL",
         25 => "ENOTTY",
         _ => "unknown",
-    }
-}
-
-/// Write bytes to stderr (for debug logging without std::io dependency issues).
-pub fn write_stderr(msg: &str) {
-    unsafe {
-        write(2, msg.as_ptr() as *const c_void, msg.len());
     }
 }

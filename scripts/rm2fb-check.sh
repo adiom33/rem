@@ -11,10 +11,10 @@
 set -euo pipefail
 
 TABLET_IP="${1:-10.11.99.1}"
-SSH_OPTS="-o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new"
+SSH_OPTS=(-o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new)
 
 run_remote() {
-    ssh $SSH_OPTS "root@${TABLET_IP}" "$@"
+    ssh "${SSH_OPTS[@]}" "root@${TABLET_IP}" "$@"
 }
 
 echo "=== rm2fb Compatibility Check ==="

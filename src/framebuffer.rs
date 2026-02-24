@@ -692,11 +692,6 @@ impl Framebuffer {
         }
     }
 
-    /// Returns true if we're using the FBIOPAN_DISPLAY fallback (degraded quality).
-    pub fn is_fb_pan(&self) -> bool {
-        matches!(self.backend, DisplayBackend::FbPan)
-    }
-
     /// Returns a human-readable name for the current display backend.
     pub fn backend_name(&self) -> &'static str {
         match self.backend {
