@@ -96,11 +96,26 @@ impl Default for FbVarScreeninfo {
     }
 }
 
+/// Note: `smem_start` is `unsigned long` in the kernel, which is 4 bytes on ARM32
+/// and 8 bytes on x86_64. We use a fixed-size pad to keep the layout correct on
+/// the target (ARM32) while avoiding misaligned reads on dev machines.
+#[cfg(target_pointer_width = "32")]
 #[repr(C)]
 #[derive(Debug)]
 struct FbFixScreeninfo {
     id: [u8; 16],
-    smem_start: usize,
+    smem_start: u32,
+    smem_len: u32,
+    fb_type: u32,
+    _rest: [u8; 200],
+}
+
+#[cfg(target_pointer_width = "64")]
+#[repr(C)]
+#[derive(Debug)]
+struct FbFixScreeninfo {
+    id: [u8; 16],
+    smem_start: u64,
     smem_len: u32,
     fb_type: u32,
     _rest: [u8; 200],

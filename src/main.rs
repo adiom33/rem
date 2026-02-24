@@ -467,7 +467,7 @@ fn main() {
     });
 
     // Index 1: physical keyboard (if available)
-    let kb_poll_idx = if let Some(fd) = phys_kb.fd() {
+    let mut kb_poll_idx = if let Some(fd) = phys_kb.fd() {
         poll_fds.push(sys::pollfd {
             fd,
             events: sys::POLLIN,
@@ -554,7 +554,12 @@ fn main() {
 
         // ---- Handle physical keyboard input ----
         if let Some(idx) = kb_poll_idx {
-            if poll_fds[idx].revents & sys::POLLIN != 0 {
+            if poll_fds[idx].revents & sys::POLLHUP != 0 {
+                eprintln!("Keyboard disconnected.");
+                // Disable the fd so poll doesn't spin on the dead descriptor
+                poll_fds[idx].fd = -1;
+                kb_poll_idx = None;
+            } else if poll_fds[idx].revents & sys::POLLIN != 0 {
                 let key_events = phys_kb.read_keys(term.app_cursor_keys);
                 for keys in key_events {
                     if let Err(e) = pty.write(&keys) {
@@ -606,15 +611,14 @@ fn main() {
                     let refresh_x = (min_col * char_w) as u32;
                     let refresh_y = (min_row * char_h) as u32;
                     let refresh_w = ((max_col - min_col + 1) * char_w) as u32;
-                    // Include status bar if dirty rect extends to bottom
-                    let refresh_h = if max_row >= term.rows.saturating_sub(1) {
-                        ((max_row - min_row + 1) * char_h) as u32 + status_bar_height as u32
-                    } else {
-                        ((max_row - min_row + 1) * char_h) as u32
-                    };
+                    // Always include status bar — it shows cursor position
+                    // which changes on nearly every update
+                    let refresh_h = (term_area_height + status_bar_height - min_row * char_h) as u32;
+                    let refresh_h = refresh_h.min((fb.height as u32).saturating_sub(refresh_y));
+                    let refresh_w = refresh_w.min((fb.width as u32).saturating_sub(refresh_x));
                     fb.refresh_fast(refresh_x, refresh_y, refresh_w, refresh_h);
                 } else {
-                    // Fallback: refresh full terminal area (e.g. status bar only)
+                    // Fallback: refresh full terminal area + status bar
                     fb.refresh_terminal(term_area_height as u32 + status_bar_height as u32);
                 }
 

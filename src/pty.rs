@@ -169,7 +169,14 @@ impl Drop for Pty {
     fn drop(&mut self) {
         unsafe {
             sys::close(self.master_fd);
-            sys::kill(self.child_pid, sys::SIGHUP);
+            // Only send SIGHUP if the child hasn't already been reaped
+            let mut status: sys::c_int = 0;
+            let ret = sys::waitpid(self.child_pid, &mut status, sys::WNOHANG);
+            if ret == 0 {
+                // Child still running — signal it and reap
+                sys::kill(self.child_pid, sys::SIGHUP);
+                sys::waitpid(self.child_pid, &mut status, 0);
+            }
         }
     }
 }

@@ -203,6 +203,11 @@ fn find_function_entry(data: &[u8], elf: &ElfInfo, literal_pool_va: u32) -> Opti
     })?;
 
     let section_start = section.offset as usize;
+    let section_end = section_start + section.size as usize;
+    // Validate section bounds against file size
+    if section_end > data.len() {
+        return None;
+    }
     let pool_offset_in_section = (literal_pool_va - section.addr) as usize;
 
     // In ARM/Thumb, the literal pool is typically right after the function
@@ -228,6 +233,7 @@ fn find_function_entry(data: &[u8], elf: &ElfInfo, literal_pool_va: u32) -> Opti
     // Search for Thumb LDR Rt, [PC, #imm8*4] (encoding T1: 0x4800-0x4FFF)
     let mut off = search_start;
     while off + 2 <= pool_offset_in_section {
+        if section_start + off + 2 > data.len() { break; }
         let insn = u16_le(data, section_start + off);
         if (insn & 0xF800) == 0x4800 {
             // LDR Rt, [PC, #imm8*4]
@@ -246,6 +252,7 @@ fn find_function_entry(data: &[u8], elf: &ElfInfo, literal_pool_va: u32) -> Opti
     if best_ldr_offset.is_none() {
         off = search_start;
         while off + 4 <= pool_offset_in_section {
+            if section_start + off + 4 > data.len() { break; }
             let hw1 = u16_le(data, section_start + off);
             let hw2 = u16_le(data, section_start + off + 2);
             // LDR.W Rt, [PC, #imm12]: 1111 1000 x101 1111 | Rt imm12
@@ -281,6 +288,7 @@ fn find_function_entry(data: &[u8], elf: &ElfInfo, literal_pool_va: u32) -> Opti
 
     while scan >= scan_limit + 2 {
         scan -= 2;
+        if section_start + scan + 2 > data.len() { continue; }
         let insn = u16_le(data, section_start + scan);
 
         // Thumb-16 PUSH with LR
@@ -290,13 +298,15 @@ fn find_function_entry(data: &[u8], elf: &ElfInfo, literal_pool_va: u32) -> Opti
         }
 
         // Check for Thumb-32 PUSH.W (need to check the previous halfword too)
-        if scan >= 2 {
-            let prev_hw = u16_le(data, section_start + scan - 2);
-            if prev_hw == 0xE92D {
-                // insn is the register list; check if LR (bit 14) is set
-                if insn & (1 << 14) != 0 {
-                    let func_va = section.addr + (scan - 2) as u32;
-                    return Some(func_va | 1); // Thumb
+        if scan >= 2 && section_start + scan > 2 {
+            if section_start + scan - 2 + 2 <= data.len() {
+                let prev_hw = u16_le(data, section_start + scan - 2);
+                if prev_hw == 0xE92D {
+                    // insn is the register list; check if LR (bit 14) is set
+                    if insn & (1 << 14) != 0 {
+                        let func_va = section.addr + (scan - 2) as u32;
+                        return Some(func_va | 1); // Thumb
+                    }
                 }
             }
         }

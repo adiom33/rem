@@ -137,7 +137,7 @@ impl Input {
             match ev.type_ {
                 EV_ABS => match ev.code {
                     ABS_MT_SLOT => {
-                        self.current_slot = ev.value as usize;
+                        self.current_slot = (ev.value as usize).min(self.slots.len() - 1);
                     }
                     ABS_MT_TRACKING_ID => {
                         if self.current_slot < self.slots.len() {

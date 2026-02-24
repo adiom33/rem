@@ -343,7 +343,7 @@ impl Terminal {
             b'0'..=b'9' => {
                 let digit = (byte - b'0') as u32;
                 let val = self.current_param.unwrap_or(0);
-                self.current_param = Some(val * 10 + digit);
+                self.current_param = Some(val.saturating_mul(10).saturating_add(digit).min(99999));
                 self.state = State::CSIParam;
             }
             b';' => {
@@ -883,9 +883,9 @@ impl Terminal {
 
     fn insert_chars(&mut self, n: usize) {
         let row = self.cursor_y;
-        let x = self.cursor_x;
+        let x = self.cursor_x.min(self.cols.saturating_sub(1));
         for _ in 0..n {
-            if self.grid[row].len() > 0 {
+            if x < self.grid[row].len() {
                 self.grid[row].pop();
                 self.grid[row].insert(x, Cell::default());
             }
