@@ -14,8 +14,8 @@ your reMarkable goes right back to being an e-reader.
 2. **A computer to build and copy the app** (Linux, Mac, or Windows with WSL)
 3. **A machine to SSH into** (your home server, a VPS, a Raspberry Pi, etc.)
 
-**After setup:** You don't need the computer anymore. The tablet boots
-directly into the terminal. See [Standalone Mode](#standalone-mode).
+**After setup:** You don't need the computer anymore. The tablet boots into a
+launcher menu where you choose Terminal or Reader. See [Boot Modes](#boot-modes).
 
 ## How It Works
 
@@ -52,15 +52,8 @@ cargo install cross                       # Docker-based ARM cross-compiler
 ./scripts/install.sh 10.11.99.1           # Build, deploy, configure
 ```
 
-That's it. **Reboot the tablet** and you get a terminal. From there, SSH
-into your server:
-
-```
-ssh user@your-server
-```
-
-When you exit (Ctrl+D or `exit`), the e-reader comes back. Reboot again
-to get the terminal.
+The install script will ask you to choose a boot mode and optionally install
+Tailscale for remote access. **Reboot the tablet** when it's done.
 
 > **Docker is required for `cross`.** Install it from [docker.com](https://docs.docker.com/get-docker/)
 > and make sure the Docker daemon is running (`docker ps` should work without errors).
@@ -128,7 +121,7 @@ cd rem
 ./scripts/build.sh
 ```
 
-The build script handles everything — picks the right compiler, adds the ARM
+The build script handles everything -- picks the right compiler, adds the ARM
 target, and produces a static binary. No manual `rustup target add` needed.
 
 ### Step 3b: Connect Your reMarkable to WiFi
@@ -153,14 +146,24 @@ Run the install script with your tablet plugged in via USB:
 ./scripts/install.sh 10.11.99.1
 ```
 
-This builds the binary, deploys it, configures rm2fb, and sets up the
-tablet to boot into the terminal. **You only need to do this once**
-(or again after updating the code).
+This builds the binary, deploys it, configures rm2fb, and sets up
+the tablet. The script will ask you two things:
+
+1. **Boot mode** -- how the tablet starts (see [Boot Modes](#boot-modes))
+2. **Tailscale** -- optional VPN for remote access (see [Tailscale](#tailscale-remote-access))
+
+You only need to run this once (or again after updating the code).
 
 ### Step 5: Use It
 
-**Reboot the tablet.** You get a shell prompt on the e-ink screen.
-From there, connect to your server:
+**Reboot the tablet.** Depending on your boot mode:
+
+- **Launcher** (default): A menu appears with **Terminal** and **Reader** buttons.
+  Tap Terminal to get a shell, tap Reader to use the e-reader.
+- **Terminal**: You go straight to a shell prompt.
+- **Reader**: Normal e-reader. Launch the terminal manually with `ssh root@tablet ./term`.
+
+From the terminal, connect to your server:
 
 ```
 ssh user@your-server
@@ -168,12 +171,10 @@ ssh user@your-server
 dbclient user@your-server
 ```
 
-When you're done, exit the shell (type `exit` or press Ctrl+D). The
-e-reader comes back. Reboot again to get the terminal.
+When you're done, exit the shell (type `exit` or press Ctrl+D). In launcher mode,
+you'll return to the menu. In terminal mode, the e-reader comes back.
 
-See [Standalone Mode](#standalone-mode) for more details on switching modes.
-
-**Alternative: run from your computer** (without boot-to-terminal)
+**Alternative: run from your computer** (without installing)
 
 ```bash
 ./scripts/run-remote.sh 10.11.99.1 user@your-server-ip
@@ -211,6 +212,9 @@ remarkable-ssh --shell /bin/sh
 
 # Larger font (if you prefer bigger text)
 remarkable-ssh --scale 3 user@myhost
+
+# Boot menu (used by the launcher service)
+remarkable-ssh --launcher
 ```
 
 ### All Options
@@ -227,6 +231,7 @@ remarkable-ssh --scale 3 user@myhost
 | `--ssh-cmd CMD` | SSH binary to use (default: `ssh`, falls back to `dbclient`) |
 | `--ssh-arg ARG` | Extra argument to pass to SSH (repeatable) |
 | `--ssh-args ARGS` | Extra arguments for SSH, comma-separated |
+| `--launcher` | Show the boot menu (Terminal / Reader chooser) |
 | `--setup` | Auto-extract rm2fb addresses and write `/etc/rm2fb.conf` (run on tablet) |
 | `--help` | Show help |
 
@@ -243,63 +248,124 @@ because you can:
 The `--tmux` flag automatically runs `tmux attach || tmux new -s main` on the
 remote machine, so it reconnects to an existing session or creates a new one.
 
-## Standalone Mode
+## Boot Modes
 
-After install, the tablet boots directly into a terminal. No computer or
-phone needed — just pick it up, type `ssh user@server`, and you're in.
+The install script offers three boot modes. You can switch between them at
+any time.
 
-### How it works
+### Launcher (recommended)
+
+The tablet boots normally into the e-reader, then a menu appears on top
+with two buttons: **Terminal** and **Reader**.
 
 ```
-Boot tablet → Shell prompt → You type: ssh user@server → Work → Exit → E-reader
-                                                                         ↓
-                                                                   Reboot → Shell again
++-------------------------+
+|                         |
+|           rem           |
+|    remarkable terminal  |
+|                         |
+|    +------------------+ |
+|    |     Terminal     | |
+|    +------------------+ |
+|                         |
+|    +------------------+ |
+|    |      Reader      | |
+|    +------------------+ |
+|                         |
++-------------------------+
 ```
 
-The install script sets up a systemd service (`remarkable-ssh.service`) that
-runs the terminal on boot instead of the normal e-reader UI. The terminal
-gives you a local shell on the reMarkable. From there you can SSH into
-any server, run local commands, or do whatever you'd do in a terminal.
+- **Terminal**: Opens a shell. When you exit, the menu reappears.
+- **Reader**: Clears the menu and returns to the e-reader. To get back
+  to the menu: reboot the tablet, or `ssh root@tablet systemctl restart remarkable-launcher`.
 
-When the shell exits, the e-reader (xochitl) starts automatically.
+The launcher runs alongside xochitl via rm2fb shared memory -- no services
+are stopped or restarted.
 
-### Switching between terminal and e-reader
+### Terminal (direct)
 
-A `term-mode` toggle is deployed to the tablet:
+The tablet boots directly into a shell prompt, skipping the e-reader entirely.
+When the shell exits, the e-reader starts automatically. Reboot to get the
+terminal back.
+
+### Reader (manual)
+
+The tablet boots normally into the e-reader. Launch the terminal manually
+when you need it:
+
+```bash
+ssh root@10.11.99.1 ./term
+```
+
+### Switching modes
+
+A `term-mode` script is deployed to the tablet:
 
 ```bash
 # Check current mode
 ssh root@10.11.99.1 ./term-mode
 
-# Switch to e-reader on boot (default reMarkable behavior)
-ssh root@10.11.99.1 ./term-mode off
-
-# Switch back to terminal on boot
-ssh root@10.11.99.1 ./term-mode on
+# Switch modes
+ssh root@10.11.99.1 ./term-mode launcher   # boot menu (Terminal / Reader)
+ssh root@10.11.99.1 ./term-mode terminal   # direct boot to terminal
+ssh root@10.11.99.1 ./term-mode reader     # normal e-reader
 ```
 
-### Manual launch (without boot-to-terminal)
-
-If you prefer the e-reader as default and only want the terminal on demand:
-
-```bash
-# Disable boot-to-terminal
-ssh root@10.11.99.1 ./term-mode off
-
-# Then launch manually when you want it (from phone/computer):
-ssh root@10.11.99.1 ./term
-```
-
-> **Tip:** Your reMarkable's WiFi IP is in **Settings > Wi-Fi > your network**.
-> Use that IP instead of `10.11.99.1` to connect over WiFi without a USB cable.
+Reboot after switching for the change to take effect.
 
 ### Undoing everything
 
 ```bash
-ssh root@10.11.99.1 './term-mode off; rm /etc/systemd/system/remarkable-ssh.service; systemctl daemon-reload'
+ssh root@10.11.99.1 './term-mode reader; systemctl disable remarkable-launcher; rm /etc/systemd/system/remarkable-ssh.service /etc/systemd/system/remarkable-launcher.service; systemctl daemon-reload; systemctl restart xochitl'
 ```
 
 This restores the tablet to stock behavior.
+
+## Tailscale (Remote Access)
+
+[Tailscale](https://tailscale.com) gives your tablet a stable IP address
+reachable from anywhere on your private network -- no port forwarding needed.
+This means you can SSH into your server from the reMarkable over WiFi at a
+coffee shop, from a hotel, or anywhere with internet.
+
+The install script optionally sets up Tailscale for you. You can also install
+it manually:
+
+```bash
+# On the tablet (via SSH):
+tailscale up --authkey=tskey-auth-xxxxx    # non-interactive (pre-generated key)
+tailscale up                                # prints a URL to open on your phone
+
+# Check your Tailscale IP:
+tailscale ip -4
+```
+
+Once connected, you can SSH into remote machines by their Tailscale IP:
+
+```
+remarkable-ssh user@100.64.0.5
+```
+
+### Auth options
+
+| Method | How |
+|--------|-----|
+| **Auth key** | Pre-generate at [login.tailscale.com/admin/settings/keys](https://login.tailscale.com/admin/settings/keys). Fully non-interactive. |
+| **Login URL** | `tailscale up` prints a URL. Open it on your phone or computer to authorize the device. |
+
+### Managing Tailscale
+
+```bash
+ssh root@10.11.99.1 tailscale status    # see connected devices
+ssh root@10.11.99.1 tailscale down      # disconnect
+ssh root@10.11.99.1 tailscale up        # reconnect
+```
+
+To uninstall:
+
+```bash
+ssh root@10.11.99.1 'systemctl stop tailscaled; systemctl disable tailscaled; rm /usr/local/bin/tailscale /usr/local/bin/tailscaled /etc/systemd/system/tailscaled.service; systemctl daemon-reload'
+```
 
 ## Keyboard Support
 
@@ -342,8 +408,8 @@ hardware EPDC. The app automatically detects the best way to update the screen:
 |---------|-------------|----------------|
 | **Native MXCFB** | Direct ioctl to `/dev/fb0` | RM1, or RM2 with working EPDC driver |
 | **rm2fb (auto)** | Shared memory + message queue | RM2 with rm2fb server running |
-| **FBIOPAN (fallback)** | Raw framebuffer pan | RM2 without rm2fb — degraded quality |
-| **None** | Screen won't update | Nothing works — see below |
+| **FBIOPAN (fallback)** | Raw framebuffer pan | RM2 without rm2fb -- degraded quality |
+| **None** | Screen won't update | Nothing works -- see below |
 
 **On startup, the app logs which backend it selected** (one of these):
 
@@ -407,7 +473,7 @@ supported by that rm2fb release. Check the rm2fb issues/wiki for your version.
 ### Unsupported firmware? (3.4+)
 
 Pre-built rm2fb only has addresses for firmware up to ~3.3. But `install.sh`
-handles this automatically — it runs `remarkable-ssh --setup` on the tablet,
+handles this automatically -- it runs `remarkable-ssh --setup` on the tablet,
 which parses the xochitl binary, finds the function addresses, and writes
 `/etc/rm2fb.conf`. No Ghidra or manual reverse engineering needed.
 
@@ -460,8 +526,8 @@ If ghosting bothers you, press Ctrl+L to trigger a full redraw in most shells.
 | **Build fails: linker not found** | Install `cross` (`cargo install cross`) or `gcc-arm-linux-gnueabihf` (`sudo apt install gcc-arm-linux-gnueabihf`). The build script auto-detects available linkers. |
 | **Build fails: `c_char` type error** | Make sure you have the latest code. The `c_char` type was changed from `i8` to `core::ffi::c_char` to work correctly on ARM targets. |
 | **"Cannot open /dev/fb0"** | The app must run directly on the reMarkable, not over SSH in a normal terminal. Also make sure xochitl isn't holding the framebuffer -- the app stops it automatically, but if something went wrong, run `systemctl stop xochitl` first. |
-| **Screen stays blank / no refresh** | Check the startup log. The app logs `Device:`, `Firmware:`, `Display backend:` on start. If it says "NO WORKING DISPLAY BACKEND", you need the rm2fb server. If it says "FBIOPAN (fallback)", the display will be degraded — install rm2fb for proper output. See [Display Setup](#display-setup-rm2-firmware-compatibility). |
-| **rm2fb: "Missing address for function"** | The rm2fb server doesn't support your firmware version. Each firmware builds xochitl at different memory addresses, and rm2fb needs matching offsets. Either check the [rm2fb releases](https://github.com/ddvk/remarkable2-framebuffer/releases) or extract addresses yourself with `./scripts/rm2fb-check.sh` — see [Unsupported firmware](#unsupported-firmware-34). |
+| **Screen stays blank / no refresh** | Check the startup log. The app logs `Device:`, `Firmware:`, `Display backend:` on start. If it says "NO WORKING DISPLAY BACKEND", you need the rm2fb server. If it says "FBIOPAN (fallback)", the display will be degraded -- install rm2fb for proper output. See [Display Setup](#display-setup-rm2-firmware-compatibility). |
+| **rm2fb: "Missing address for function"** | The rm2fb server doesn't support your firmware version. Each firmware builds xochitl at different memory addresses, and rm2fb needs matching offsets. Either check the [rm2fb releases](https://github.com/ddvk/remarkable2-framebuffer/releases) or extract addresses yourself with `./scripts/rm2fb-check.sh` -- see [Unsupported firmware](#unsupported-firmware-34). |
 | **rm2fb: "Failed to lock epframebuffer"** | Another process already has the display lock. Stop xochitl first: `systemctl stop xochitl`, then start it with the rm2fb server: `LD_PRELOAD=/opt/lib/librm2fb_server.so.1 xochitl &` |
 | **rm2fb: Qt library errors** | The rm2fb server binary was built against a different Qt version than your firmware. You need an rm2fb build that matches your firmware's Qt libraries. Check `/usr/lib/libQt5*.so*` on the tablet and compare with the rm2fb build requirements. |
 | **Display is faint/degraded** | You're likely using the FBIOPAN fallback (check startup log). This bypasses e-ink waveform processing. Install rm2fb for proper display output. |
@@ -471,6 +537,7 @@ If ghosting bothers you, press Ctrl+L to trigger a full redraw in most shells.
 | **Stuck on blank screen** | The app should restart xochitl automatically. If it didn't, SSH into your reMarkable and run `systemctl start xochitl`. |
 | **Characters show as `?`** | The built-in font only covers ASCII (English letters, numbers, symbols). Non-ASCII characters (accented letters, emoji, CJK) show as `?`. |
 | **SSH host key changed** | If you reimaged or updated firmware, remove the old key: `ssh-keygen -R 10.11.99.1` |
+| **Launcher menu doesn't appear** | The launcher requires rm2fb (it draws on shared memory while xochitl runs). Check that xochitl is running with rm2fb: `test -e /dev/shm/swtfb.01 && echo ok`. If not, re-run `install.sh`. |
 
 ## Project Structure
 
@@ -479,7 +546,8 @@ rem/
   Cargo.toml              # Rust project configuration (zero dependencies)
   .cargo/config.toml      # Cross-compilation linker settings
   src/
-    main.rs               # Entry point, event loop, display refresh
+    main.rs               # Entry point, event loop, launcher mode, display refresh
+    launcher.rs           # Boot menu UI (Terminal / Reader chooser)
     framebuffer.rs         # E-ink display (native ioctls or rm2fb auto-detected)
     font.rs               # Built-in 8x16 pixel bitmap font (95 ASCII glyphs)
     terminal.rs           # VT100/xterm escape sequence parser
@@ -489,7 +557,7 @@ rem/
     setup.rs              # rm2fb auto-setup: ELF parser + address extraction
     sys.rs                # Raw Linux syscall bindings (replaces libc crate)
   scripts/
-    install.sh            # One-click: build + deploy + configure + enable standalone
+    install.sh            # One-click: build + deploy + configure + boot mode + Tailscale
     build.sh              # Cross-compile for ARM (reMarkable hardware)
     deploy.sh             # Copy binary to reMarkable via USB
     run-remote.sh         # Build + deploy + run from your computer
@@ -502,9 +570,11 @@ rem/
 /home/root/
   remarkable-ssh              # The terminal binary
   term                        # Quick launcher script (./term to start)
-  term-mode                   # Toggle boot mode (./term-mode on/off)
+  term-mode                   # Toggle boot mode (./term-mode launcher|terminal|reader)
 /etc/systemd/system/
-  remarkable-ssh.service      # Systemd service for boot-to-terminal
+  remarkable-ssh.service      # Systemd service for direct boot-to-terminal
+  remarkable-launcher.service # Systemd service for boot menu (runs alongside xochitl)
+  tailscaled.service          # Tailscale daemon (if installed)
 ```
 
 The entire app is a single Rust binary with **zero external dependencies**.
