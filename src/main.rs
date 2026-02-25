@@ -502,6 +502,7 @@ fn main() {
         Err(e) => {
             eprintln!("ERROR: Failed to spawn {}: {}", command, e);
             eprintln!("If SSH is not found, try: --ssh-cmd /path/to/ssh");
+            restart_xochitl();
             std::process::exit(1);
         }
     };
