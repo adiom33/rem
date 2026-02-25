@@ -99,7 +99,7 @@ fn parse_args() -> Config {
             "--scale" => {
                 i += 1;
                 if i < args.len() {
-                    config.font_scale = args[i].parse().unwrap_or(DEFAULT_FONT_SCALE);
+                    config.font_scale = args[i].parse().unwrap_or(DEFAULT_FONT_SCALE).max(1);
                 }
             }
             "--fb" => {

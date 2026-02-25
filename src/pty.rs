@@ -141,6 +141,10 @@ impl Pty {
                 }
                 return Err(format!("write to PTY failed: {}", err));
             }
+            if n == 0 {
+                // Shouldn't happen with count > 0, but guard against infinite loop
+                return Err("write to PTY returned 0".to_string());
+            }
             written += n as usize;
         }
         Ok(())
