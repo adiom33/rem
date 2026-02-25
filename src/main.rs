@@ -343,10 +343,15 @@ fn run_launcher_mode(config: &Config) {
             launcher::LauncherChoice::Terminal => {
                 drop(fb);
                 eprintln!("Launcher: starting terminal...");
-                let _ = std::process::Command::new(&exe)
-                    .args(&forward_args)
-                    .status();
-                eprintln!("Launcher: terminal exited, returning to menu.");
+                match std::process::Command::new(&exe).args(&forward_args).status() {
+                    Ok(status) => {
+                        eprintln!("Launcher: terminal exited with {}", status);
+                    }
+                    Err(e) => {
+                        eprintln!("Launcher: failed to start terminal: {}", e);
+                        std::thread::sleep(std::time::Duration::from_secs(3));
+                    }
+                }
                 // Brief pause to let e-ink settle before re-drawing
                 std::thread::sleep(std::time::Duration::from_millis(500));
             }

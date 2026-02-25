@@ -42,7 +42,7 @@ install_tailscale() {
 
     # Get latest version from pkgs.tailscale.com
     echo "  Detecting latest Tailscale version..."
-    TS_VERSION=$(curl -s https://pkgs.tailscale.com/stable/ | grep -oP 'tailscale_\K[0-9]+\.[0-9]+\.[0-9]+' | sort -V | tail -1 || echo "")
+    TS_VERSION=$(curl -s https://pkgs.tailscale.com/stable/ | sed -n 's/.*tailscale_\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | sort -t. -k1,1n -k2,2n -k3,3n | tail -1 || echo "")
     if [ -z "$TS_VERSION" ]; then
         echo "  Could not detect latest version. Using 1.78.1"
         TS_VERSION="1.78.1"
@@ -91,6 +91,7 @@ install_tailscale() {
     run_remote "
         cd /tmp
         tar xzf '$TS_TARBALL'
+        mkdir -p /usr/local/bin
         cp tailscale_${TS_VERSION}_${TS_ARCH}/tailscale /usr/local/bin/tailscale
         cp tailscale_${TS_VERSION}_${TS_ARCH}/tailscaled /usr/local/bin/tailscaled
         chmod +x /usr/local/bin/tailscale /usr/local/bin/tailscaled
@@ -107,7 +108,7 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=notify
+Type=simple
 ExecStart=/usr/local/bin/tailscaled --state=/var/lib/tailscale/tailscaled.state --socket=/var/run/tailscale/tailscaled.sock
 ExecStopPost=/usr/local/bin/tailscale down
 Restart=on-failure
@@ -152,9 +153,10 @@ TSSERVICE
         *)
             echo "  Starting Tailscale login..."
             echo "  A URL will appear below — open it on your phone or computer."
+            echo "  (Times out after 120 seconds. Run 'tailscale up' on the tablet to retry.)"
             echo ""
-            # tailscale up prints the login URL to stderr
-            run_remote 'tailscale up' 2>&1 | sed 's/^/  /'
+            # tailscale up prints the login URL to stderr; --timeout prevents indefinite hang
+            run_remote 'tailscale up --timeout=120s' 2>&1 | sed 's/^/  /'
             echo ""
             TS_IP=$(run_remote 'tailscale ip -4 2>/dev/null || echo "pending"' | tr -d '[:space:]')
             if [ "$TS_IP" != "pending" ]; then
@@ -372,7 +374,7 @@ Wants=xochitl.service
 [Service]
 Type=simple
 # Wait for rm2fb shared memory to appear before starting
-ExecStartPre=/bin/sh -c 'for i in 1 2 3 4 5 6; do test -e /dev/shm/swtfb.01 && exit 0; sleep 2; done; exit 0'
+ExecStartPre=/bin/sh -c 'for i in 1 2 3 4 5 6; do test -e /dev/shm/swtfb.01 && exit 0; sleep 2; done; exit 1'
 ExecStart=/home/root/remarkable-ssh --launcher
 Restart=on-failure
 RestartSec=2
