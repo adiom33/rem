@@ -131,7 +131,7 @@ impl Input {
 
         for i in 0..count {
             let ev: InputEvent = unsafe {
-                std::ptr::read(buf.as_ptr().add(i * event_size) as *const InputEvent)
+                std::ptr::read_unaligned(buf.as_ptr().add(i * event_size) as *const InputEvent)
             };
 
             match ev.type_ {
