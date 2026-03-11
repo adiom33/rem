@@ -234,13 +234,15 @@ impl PhysicalKeyboard {
             }
         }
 
-        // Strategy 2: Scan /dev/input/event* and probe capabilities
+        // Strategy 2: Scan /dev/input/event* and probe by name and capabilities
         for i in 0..20 {
             let path = format!("/dev/input/event{}", i);
             if let Ok(f) = File::open(&path) {
                 let fd = f.as_raw_fd();
-                if is_keyboard_device(fd) {
-                    let name = get_device_name(fd).unwrap_or_default();
+                let name = get_device_name(fd).unwrap_or_default();
+                let name_lower = name.to_lowercase();
+                // Match by device name (e.g. "rM_Keyboard") or capabilities
+                if name_lower.contains("keyboard") || name_lower.contains("kbd") || is_keyboard_device(fd) {
                     eprintln!("Auto-detected keyboard: {} ({})", path, name);
                     return PhysicalKeyboard {
                         file: Some(f),

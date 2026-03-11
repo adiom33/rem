@@ -29,6 +29,27 @@ pub const MAP_FAILED: *mut c_void = !0 as *mut c_void;
 // open
 pub const O_RDWR: c_int = 0x02;
 pub const O_NONBLOCK: c_int = 0x800;
+pub const O_CREAT: c_int = 0x40;
+
+// Socket constants (for rM2-stuff UNIX domain socket)
+pub const AF_UNIX: c_int = 1;
+pub const SOCK_STREAM: c_int = 1;
+pub const SOL_SOCKET: c_int = 1;
+pub const SO_RCVTIMEO: c_int = 20;
+
+/// UNIX domain socket address
+#[repr(C)]
+pub struct sockaddr_un {
+    pub sun_family: c_ushort,
+    pub sun_path: [c_char; 108],
+}
+
+/// Timeval for socket timeout
+#[repr(C)]
+pub struct timeval {
+    pub tv_sec: time_t,
+    pub tv_usec: suseconds_t,
+}
 
 // fcntl
 pub const F_GETFL: c_int = 3;
@@ -159,6 +180,16 @@ extern "C" {
     // Sys V IPC (message queues — used for rm2fb)
     pub fn msgget(key: key_t, msgflg: c_int) -> c_int;
     pub fn msgsnd(msqid: c_int, msgp: *const c_void, msgsz: size_t, msgflg: c_int) -> c_int;
+
+    // POSIX shared memory (for rM2-stuff)
+    pub fn shm_open(name: *const c_char, oflag: c_int, mode: mode_t) -> c_int;
+    pub fn ftruncate(fd: c_int, length: isize) -> c_int;
+
+    // Sockets (for rM2-stuff UNIX domain socket)
+    pub fn socket(domain: c_int, sock_type: c_int, protocol: c_int) -> c_int;
+    pub fn connect(sockfd: c_int, addr: *const c_void, addrlen: c_uint) -> c_int;
+    pub fn setsockopt(sockfd: c_int, level: c_int, optname: c_int,
+                      optval: *const c_void, optlen: c_uint) -> c_int;
 }
 
 /// Get the last errno value.

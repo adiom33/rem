@@ -22,7 +22,7 @@ use terminal::Terminal;
 /// Default font scale. 2x means 16x32 pixel characters.
 /// On the rM2's 1404x1872 display this gives ~87 columns x 58 rows (full screen)
 /// or ~87 cols x 37 rows with on-screen keyboard.
-const DEFAULT_FONT_SCALE: usize = 2;
+const DEFAULT_FONT_SCALE: usize = 3;
 
 /// How many milliseconds to wait before refreshing the display after PTY output.
 /// Allows batching rapid output (e.g. scrolling) into a single refresh.
@@ -48,6 +48,8 @@ fn print_usage() {
     eprintln!("  --cmd STRING    Remote command to run via SSH");
     eprintln!("  --ssh-args ARGS Extra arguments passed to SSH (comma-separated)");
     eprintln!("  --ssh-arg ARG   Extra SSH argument (repeatable)");
+    eprintln!("  --landscape     Force landscape (90° CW rotation for folio keyboard)");
+    eprintln!("  --portrait      Force portrait mode (no rotation)");
     eprintln!("  --launcher      Show boot menu (Terminal / Reader chooser)");
     eprintln!("  --setup         Auto-detect rm2fb addresses and write /etc/rm2fb.conf");
     eprintln!("  --help          Show this help");
@@ -75,6 +77,7 @@ struct Config {
     remote_cmd: Option<String>,
     ssh_extra_args: Vec<String>,
     launcher: bool,
+    landscape: Option<bool>, // None=auto, Some(true)=force landscape, Some(false)=force portrait
 }
 
 fn parse_args() -> Config {
@@ -91,6 +94,7 @@ fn parse_args() -> Config {
         remote_cmd: None,
         ssh_extra_args: Vec::new(),
         launcher: false,
+        landscape: None,
     };
 
     let mut i = 1;
@@ -154,6 +158,12 @@ fn parse_args() -> Config {
                 if i < args.len() {
                     config.ssh_extra_args.push(args[i].clone());
                 }
+            }
+            "--landscape" => {
+                config.landscape = Some(true);
+            }
+            "--portrait" => {
+                config.landscape = Some(false);
             }
             "--launcher" => {
                 config.launcher = true;
@@ -359,16 +369,17 @@ fn run_launcher_mode(config: &Config) {
                 fb.clear();
                 fb.refresh_full();
                 drop(fb);
-                eprintln!("Launcher: switching to reader.");
-                // Ensure xochitl is running (it should already be for rm2fb)
-                let cmd = b"systemctl start xochitl 2>/dev/null || true\0";
+                eprintln!("Launcher: switching to reader (xochitl).");
+                // Start xochitl and wait for it to exit.
+                // When the user wants to return, they can:
+                //   - Long-press power button (triggers shutdown/reboot → launcher restarts)
+                //   - SSH in and run: systemctl stop xochitl
+                let cmd = b"systemctl start xochitl 2>/dev/null; sleep 2; while pidof xochitl >/dev/null 2>&1; do sleep 2; done\0";
                 unsafe {
                     sys::system(cmd.as_ptr() as *const sys::c_char);
                 }
-                // Exit cleanly — xochitl re-renders on next touch.
-                // To return to the launcher: reboot, or
-                //   ssh root@tablet 'systemctl restart remarkable-launcher'
-                std::process::exit(0);
+                eprintln!("Launcher: xochitl exited, returning to menu.");
+                std::thread::sleep(std::time::Duration::from_millis(500));
             }
         }
     }
@@ -395,6 +406,18 @@ fn main() {
     };
 
     eprintln!("Display backend: {}", fb.backend_name());
+
+    // ---- Set landscape mode if requested or auto-detected ----
+    let use_landscape = match config.landscape {
+        Some(v) => v,
+        None => {
+            // Auto-detect: check if folio keyboard (rM_Keyboard) is present
+            std::path::Path::new("/dev/input/by-path/platform-30a80000.serial-event").exists()
+        }
+    };
+    if use_landscape {
+        fb.set_landscape();
+    }
 
     // ---- Stop xochitl so we own the framebuffer ----
     // Skip if using rm2fb — the rm2fb server runs inside xochitl (or alongside it),
@@ -682,11 +705,9 @@ fn main() {
                     let refresh_x = (min_col * char_w) as u32;
                     let refresh_y = (min_row * char_h) as u32;
                     let refresh_w = ((max_col - min_col + 1) * char_w) as u32;
-                    // Always include status bar — it shows cursor position
-                    // which changes on nearly every update
-                    let refresh_h = (term_area_height + status_bar_height - min_row * char_h) as u32;
-                    let refresh_h = refresh_h.min((fb.height as u32).saturating_sub(refresh_y));
+                    let refresh_h = ((max_row - min_row + 1) * char_h) as u32;
                     let refresh_w = refresh_w.min((fb.width as u32).saturating_sub(refresh_x));
+                    let refresh_h = refresh_h.min((fb.height as u32).saturating_sub(refresh_y));
                     fb.refresh_fast(refresh_x, refresh_y, refresh_w, refresh_h);
                 } else {
                     // Fallback: refresh full terminal area + status bar

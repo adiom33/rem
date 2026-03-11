@@ -799,30 +799,20 @@ impl Terminal {
 
     fn erase_line(&mut self, mode: u32) {
         let row = self.cursor_y;
-        match mode {
-            0 => {
-                // Erase right (from cursor to end of line)
-                for col in self.cursor_x..self.cols {
-                    self.grid[row][col] = Cell::default();
-                }
+        let (start, end) = match mode {
+            0 => (self.cursor_x, self.cols),
+            1 => (0, self.cursor_x.min(self.cols - 1) + 1),
+            2 => (0, self.cols),
+            _ => return,
+        };
+        let blank = Cell::default();
+        for col in start..end {
+            if self.grid[row][col].ch != blank.ch || self.grid[row][col].inverse != blank.inverse {
+                self.grid[row][col] = blank.clone();
+                self.grid[row][col].dirty = true;
+                self.mark_cell_dirty(row, col);
             }
-            1 => {
-                // Erase left (from start to cursor)
-                for col in 0..=self.cursor_x.min(self.cols - 1) {
-                    self.grid[row][col] = Cell::default();
-                }
-            }
-            2 => {
-                // Erase whole line
-                for col in 0..self.cols {
-                    self.grid[row][col] = Cell::default();
-                }
-            }
-            _ => {}
         }
-        // erase_line: mark the affected row in dirty rect
-        self.mark_cell_dirty(row, 0);
-        self.mark_cell_dirty(row, self.cols.saturating_sub(1));
         self.dirty = true;
     }
 
@@ -867,17 +857,25 @@ impl Terminal {
     fn delete_chars(&mut self, n: usize) {
         let row = self.cursor_y;
         let x = self.cursor_x;
+        // Find rightmost non-blank cell before delete to limit dirty range
+        let mut last_nonblank = x;
+        for col in (x..self.cols).rev() {
+            if self.grid[row][col].ch != b' ' && self.grid[row][col].ch != 0 {
+                last_nonblank = col;
+                break;
+            }
+        }
+        let dirty_end = (last_nonblank + n + 1).min(self.cols);
         for _ in 0..n {
             if x < self.cols {
                 self.grid[row].remove(x);
                 self.grid[row].push(Cell::default());
             }
         }
-        for cell in &mut self.grid[row][x..] {
-            cell.dirty = true;
+        for col in x..dirty_end {
+            self.grid[row][col].dirty = true;
+            self.mark_cell_dirty(row, col);
         }
-        self.mark_cell_dirty(row, x);
-        self.mark_cell_dirty(row, self.cols.saturating_sub(1));
         self.dirty = true;
     }
 

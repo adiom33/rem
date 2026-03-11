@@ -72,6 +72,13 @@ impl Pty {
                 let rows_env = CString::new(format!("LINES={}", rows)).unwrap();
                 sys::putenv(rows_env.into_raw());
 
+                // Ensure /opt/bin is in PATH
+                let cur_path = std::env::var("PATH").unwrap_or_default();
+                if !cur_path.contains("/opt/bin") {
+                    let path_env = CString::new(format!("PATH=/opt/bin:{}", cur_path)).unwrap();
+                    sys::putenv(path_env.into_raw());
+                }
+
                 // Build argv
                 let c_command = CString::new(command).unwrap();
                 let c_args: Vec<CString> = args

@@ -60,6 +60,26 @@ const RM2FB_BPP: usize = 16;
 const RM2FB_SHM_SIZE: usize = RM2FB_WIDTH * RM2FB_HEIGHT * (RM2FB_BPP / 8);
 const RM2FB_SHM_PATH: &str = "/dev/shm/swtfb.01";
 
+// rM2-stuff: shared memory via shm_open + UNIX socket for updates
+const RM2STUFF_SHM_NAME: &str = "/swtfb.01";
+const RM2STUFF_SOCK_PATH: &str = "/var/run/rm2fb.sock";
+// Total shared memory: RGB565 framebuffer + 8-bit grayscale buffer
+const RM2STUFF_SHM_SIZE: usize = RM2FB_WIDTH * RM2FB_HEIGHT * 2 + RM2FB_WIDTH * RM2FB_HEIGHT;
+
+/// rM2-stuff UpdateParams struct (32 bytes), sent over the UNIX socket.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Rm2StuffUpdateParams {
+    y1: i32,
+    x1: i32,
+    y2: i32,
+    x2: i32,
+    flags: i32,      // 0=partial, 1=full, 2=sync
+    waveform: i32,    // 0=DU, 1=DU(pen), 2=GL16(init), 3=GC16(ui)
+    temp_override: f32,
+    extra_mode: i32,  // 6=default, 9=full refresh
+}
+
 // Waveform modes
 pub const WAVEFORM_MODE_INIT: u32 = 0;
 pub const WAVEFORM_MODE_DU: u32 = 1;
@@ -134,9 +154,12 @@ enum DisplayBackend {
     NativeV2,
     /// Direct MXCFB_SEND_UPDATE V1 ioctl on /dev/fb0
     NativeV1,
-    /// rm2fb: pixels via shared memory, updates via Sys V message queue.
+    /// rm2fb (ddvk): pixels via shared memory, updates via Sys V message queue.
     /// No LD_PRELOAD needed — we speak the protocol natively.
     Rm2fb { msqid: sys::c_int },
+    /// rM2-stuff (timower): pixels via POSIX shared memory, updates via UNIX socket.
+    /// Works with Qt6 firmware (3.9+). No LD_PRELOAD needed.
+    Rm2Stuff { sock_fd: sys::c_int },
     /// FBIOPAN_DISPLAY fallback: write to fb0 + pan to push frames through the
     /// mxsfb LCD controller. On RM2 this pushes raw pixels without waveform
     /// processing — the e-ink panel may show very faint/degraded updates but
@@ -198,10 +221,16 @@ fn detect_device_model() -> &'static str {
 
 pub struct Framebuffer {
     file: File,
+    /// Logical width (what the terminal sees — landscape if rotated)
     pub width: usize,
+    /// Logical height (what the terminal sees — landscape if rotated)
     pub height: usize,
     pub bits_per_pixel: usize,
+    /// Physical framebuffer line length in bytes
     line_length: usize,
+    /// Physical framebuffer width/height (before rotation)
+    phys_width: usize,
+    phys_height: usize,
     /// Active pixel memory — either /dev/fb0 mmap or rm2fb shared memory.
     mem: *mut u8,
     mem_len: usize,
@@ -214,6 +243,8 @@ pub struct Framebuffer {
     update_marker: u32,
     partial_refresh_count: u32,
     backend: DisplayBackend,
+    /// Rotate 90° clockwise for landscape mode (folio keyboard)
+    pub rotated: bool,
 }
 
 unsafe impl Send for Framebuffer {}
@@ -255,11 +286,19 @@ impl Framebuffer {
         let bpp = vinfo.bits_per_pixel as usize;
         let bytes_per_pixel = if bpp > 0 { bpp / 8 } else { 2 };
         let line_length = width * bytes_per_pixel;
-        let fb0_mem_len = if line_length > 0 && height > 0 {
+        let calculated_size = if line_length > 0 && height > 0 {
             line_length * height
         } else {
-            // Fallback: use finfo.smem_len or a reasonable default
-            if finfo.smem_len > 0 { finfo.smem_len as usize } else { RM2FB_SHM_SIZE }
+            0
+        };
+        // Use finfo.smem_len for mmap (it's what the driver actually allocated).
+        // Fall back to calculated size only if smem_len is 0.
+        let fb0_mem_len = if finfo.smem_len > 0 {
+            finfo.smem_len as usize
+        } else if calculated_size > 0 {
+            calculated_size
+        } else {
+            RM2FB_SHM_SIZE
         };
 
         let fb_id_end = finfo.id.iter().position(|&b| b == 0).unwrap_or(finfo.id.len());
@@ -278,7 +317,8 @@ impl Framebuffer {
             eprintln!("  (RM2 software display controller — native MXCFB ioctls will not work)");
         }
 
-        // mmap /dev/fb0 (we always do this even if we switch to rm2fb later)
+        // mmap /dev/fb0 — may fail on RM2 when rM2-stuff owns the display,
+        // in which case we'll use shared memory instead.
         let fb0_mem = unsafe {
             sys::mmap(
                 ptr::null_mut(),
@@ -289,25 +329,35 @@ impl Framebuffer {
                 0,
             )
         };
-        if fb0_mem == sys::MAP_FAILED {
-            return Err(format!("mmap /dev/fb0 failed: {} (errno {})", sys::errno_str(), sys::errno()));
-        }
+        let (fb0_ptr, fb0_len) = if fb0_mem == sys::MAP_FAILED {
+            eprintln!("mmap /dev/fb0 failed: {} (errno {}) — will use shared memory if available",
+                       sys::errno_str(), sys::errno());
+            (ptr::null_mut(), 0usize)
+        } else {
+            (fb0_mem as *mut u8, fb0_mem_len)
+        };
+
+        let phys_w = if width > 0 { width } else { RM2FB_WIDTH };
+        let phys_h = if height > 0 { height } else { RM2FB_HEIGHT };
 
         let mut fb = Framebuffer {
             file,
-            width: if width > 0 { width } else { RM2FB_WIDTH },
-            height: if height > 0 { height } else { RM2FB_HEIGHT },
+            width: phys_w,
+            height: phys_h,
             bits_per_pixel: if bpp > 0 { bpp } else { RM2FB_BPP },
             line_length: if line_length > 0 { line_length } else { RM2FB_WIDTH * 2 },
-            mem: fb0_mem as *mut u8,
-            mem_len: fb0_mem_len,
-            fb0_mem: fb0_mem as *mut u8,
-            fb0_mem_len,
+            phys_width: phys_w,
+            phys_height: phys_h,
+            mem: if fb0_ptr.is_null() { ptr::null_mut() } else { fb0_ptr },
+            mem_len: fb0_len,
+            fb0_mem: fb0_ptr,
+            fb0_mem_len: fb0_len,
             rm2fb_mem: ptr::null_mut(),
             rm2fb_mem_len: 0,
             update_marker: 1,
             partial_refresh_count: 0,
             backend: DisplayBackend::None,
+            rotated: false,
         };
 
         // Probe display backends in order of preference:
@@ -323,7 +373,12 @@ impl Framebuffer {
             return Ok(fb);
         }
 
-        // Native ioctls failed — try rm2fb
+        // Native ioctls failed — try rM2-stuff (UNIX socket, works with Qt6)
+        if fb.probe_rm2stuff() {
+            return Ok(fb);
+        }
+
+        // Try classic rm2fb (SysV message queue, Qt5 only)
         if fb.probe_rm2fb() {
             return Ok(fb);
         }
@@ -370,9 +425,9 @@ impl Framebuffer {
         Ok(fb)
     }
 
-    /// Returns true if we're using the rm2fb backend (meaning xochitl should NOT be stopped).
+    /// Returns true if we're using a shared-memory backend (meaning xochitl should NOT be stopped).
     pub fn is_rm2fb(&self) -> bool {
-        matches!(self.backend, DisplayBackend::Rm2fb { .. })
+        matches!(self.backend, DisplayBackend::Rm2fb { .. } | DisplayBackend::Rm2Stuff { .. })
     }
 
     fn try_auto_update_mode(&self) {
@@ -478,6 +533,8 @@ impl Framebuffer {
         self.mem_len = RM2FB_SHM_SIZE;
         self.width = RM2FB_WIDTH;
         self.height = RM2FB_HEIGHT;
+        self.phys_width = RM2FB_WIDTH;
+        self.phys_height = RM2FB_HEIGHT;
         self.bits_per_pixel = RM2FB_BPP;
         self.line_length = RM2FB_WIDTH * (RM2FB_BPP / 8);
         self.backend = DisplayBackend::Rm2fb { msqid };
@@ -487,6 +544,173 @@ impl Framebuffer {
         eprintln!("  Message queue: id={} key=0x{:x}", msqid, sys::RM2FB_MSG_KEY);
 
         true
+    }
+
+    /// Try to detect and connect to rM2-stuff (timower/rM2-stuff).
+    /// Uses: POSIX shared memory at /swtfb.01 + UNIX domain socket at /var/run/rm2fb.sock.
+    /// Returns true if rM2-stuff is available and we switched to it.
+    fn probe_rm2stuff(&mut self) -> bool {
+        // Check if the UNIX socket exists
+        if !std::path::Path::new(RM2STUFF_SOCK_PATH).exists() {
+            eprintln!("rM2-stuff probe: {} not found", RM2STUFF_SOCK_PATH);
+            return false;
+        }
+
+        // Open shared memory file directly via /dev/shm (more portable than shm_open)
+        let shm_path = std::ffi::CString::new("/dev/shm/swtfb.01").unwrap();
+        let shm_fd = unsafe {
+            sys::open(shm_path.as_ptr(), sys::O_RDWR)
+        };
+        if shm_fd < 0 {
+            eprintln!("rM2-stuff probe: /dev/shm/swtfb.01 not found (errno {})", sys::errno());
+            return false;
+        }
+        self.finish_rm2stuff_probe(shm_fd)
+    }
+
+    fn finish_rm2stuff_probe(&mut self, shm_fd: sys::c_int) -> bool {
+        // mmap the shared memory (RGB565 framebuffer portion)
+        let shm_mem = unsafe {
+            sys::mmap(
+                ptr::null_mut(),
+                RM2STUFF_SHM_SIZE,
+                sys::PROT_READ | sys::PROT_WRITE,
+                sys::MAP_SHARED,
+                shm_fd,
+                0,
+            )
+        };
+        unsafe { sys::close(shm_fd); }
+
+        if shm_mem == sys::MAP_FAILED {
+            eprintln!("rM2-stuff probe: mmap failed (errno {})", sys::errno());
+            return false;
+        }
+
+        // Connect to the UNIX domain socket
+        let sock_fd = unsafe { sys::socket(sys::AF_UNIX, sys::SOCK_STREAM, 0) };
+        if sock_fd < 0 {
+            eprintln!("rM2-stuff probe: socket() failed (errno {})", sys::errno());
+            unsafe { sys::munmap(shm_mem, RM2STUFF_SHM_SIZE); }
+            return false;
+        }
+
+        // Set up sockaddr_un
+        let mut addr: sys::sockaddr_un = unsafe { std::mem::zeroed() };
+        addr.sun_family = sys::AF_UNIX as sys::c_ushort;
+        let path_bytes = RM2STUFF_SOCK_PATH.as_bytes();
+        for (i, &b) in path_bytes.iter().enumerate() {
+            if i >= 107 { break; }
+            addr.sun_path[i] = b as sys::c_char;
+        }
+
+        let ret = unsafe {
+            sys::connect(
+                sock_fd,
+                &addr as *const sys::sockaddr_un as *const sys::c_void,
+                std::mem::size_of::<sys::sockaddr_un>() as sys::c_uint,
+            )
+        };
+        if ret < 0 {
+            eprintln!("rM2-stuff probe: connect({}) failed (errno {})", RM2STUFF_SOCK_PATH, sys::errno());
+            unsafe {
+                sys::close(sock_fd);
+                sys::munmap(shm_mem, RM2STUFF_SHM_SIZE);
+            }
+            return false;
+        }
+
+        // Set receive timeout (5 seconds)
+        let tv = sys::timeval { tv_sec: 5, tv_usec: 0 };
+        unsafe {
+            sys::setsockopt(
+                sock_fd,
+                sys::SOL_SOCKET,
+                sys::SO_RCVTIMEO,
+                &tv as *const sys::timeval as *const sys::c_void,
+                std::mem::size_of::<sys::timeval>() as sys::c_uint,
+            );
+        }
+
+        // Success — switch to rM2-stuff backend
+        self.rm2fb_mem = shm_mem as *mut u8;
+        self.rm2fb_mem_len = RM2STUFF_SHM_SIZE;
+        self.mem = self.rm2fb_mem;
+        self.mem_len = RM2FB_SHM_SIZE; // Only use the RGB565 portion for pixel writes
+        self.width = RM2FB_WIDTH;
+        self.height = RM2FB_HEIGHT;
+        self.phys_width = RM2FB_WIDTH;
+        self.phys_height = RM2FB_HEIGHT;
+        self.bits_per_pixel = RM2FB_BPP;
+        self.line_length = RM2FB_WIDTH * (RM2FB_BPP / 8);
+        self.backend = DisplayBackend::Rm2Stuff { sock_fd };
+
+        eprintln!("Display backend: rM2-stuff (native client, no LD_PRELOAD needed)");
+        eprintln!("  Shared memory: {} ({}x{} @ {}bpp)", RM2STUFF_SHM_NAME, RM2FB_WIDTH, RM2FB_HEIGHT, RM2FB_BPP);
+        eprintln!("  UNIX socket: {}", RM2STUFF_SOCK_PATH);
+
+        true
+    }
+
+    /// Send update via rM2-stuff UNIX domain socket.
+    /// Matches the protocol in rM2-stuff IOCTL.cpp handleUpdate().
+    fn send_update_rm2stuff(
+        &mut self,
+        sock_fd: sys::c_int,
+        x: u32, y: u32, w: u32, h: u32,
+        waveform: u32, full: bool,
+    ) {
+        // ioctl_waveform_flag tells the server this is a raw MXCFB waveform constant
+        const IOCTL_WAVEFORM_FLAG: i32 = 0xf000;
+
+        // Map MXCFB update mode/waveform to rM2-stuff flags (see IOCTL.cpp lines 80-104)
+        // flags: 0=partial, 1=full, 2=sync, 4=fast_draw (DU+partial)
+        let mut flags = if full { 1i32 } else { 0i32 };
+
+        // Sync on full init
+        if waveform == WAVEFORM_MODE_INIT && full {
+            flags |= 2;
+        }
+        // Fast draw for DU partial
+        if waveform == WAVEFORM_MODE_DU && !full {
+            flags |= 4;
+        }
+
+        let params = Rm2StuffUpdateParams {
+            y1: y as i32,
+            x1: x as i32,
+            y2: (y.wrapping_add(h).wrapping_sub(1)) as i32, // inclusive
+            x2: (x.wrapping_add(w).wrapping_sub(1)) as i32, // inclusive
+            flags,
+            waveform: waveform as i32 | IOCTL_WAVEFORM_FLAG,
+            temp_override: 0.0,
+            extra_mode: 0,
+        };
+
+        let ret = unsafe {
+            sys::write(
+                sock_fd,
+                &params as *const Rm2StuffUpdateParams as *const sys::c_void,
+                std::mem::size_of::<Rm2StuffUpdateParams>(),
+            )
+        };
+        if ret < 0 {
+            let e = sys::errno();
+            if e != 11 { // EAGAIN
+                eprintln!("rM2-stuff write failed: errno {} ({})", e, sys::errno_str());
+            }
+            return;
+        }
+
+        // Read the response (bool: success/failure)
+        let mut result: u8 = 0;
+        unsafe {
+            sys::read(
+                sock_fd,
+                &mut result as *mut u8 as *mut sys::c_void,
+                1,
+            );
+        }
     }
 
     /// Try FBIOPAN_DISPLAY as a last-resort fallback.
@@ -629,13 +853,29 @@ impl Framebuffer {
         unsafe { sys::ioctl(fd, sys::MXCFB_SEND_UPDATE_V1, &update); }
     }
 
+    /// Enable landscape (90° CW rotation). Swaps logical width/height.
+    pub fn set_landscape(&mut self) {
+        self.rotated = true;
+        self.width = self.phys_height;
+        self.height = self.phys_width;
+        eprintln!("Landscape mode: {}x{} (rotated from {}x{})",
+                  self.width, self.height, self.phys_width, self.phys_height);
+    }
+
     #[inline]
     pub fn set_pixel(&mut self, x: usize, y: usize, white: bool) {
         if x >= self.width || y >= self.height {
             return;
         }
+        // Rotate logical (x,y) to physical framebuffer coordinates
+        // 90° CCW: phys_x = phys_width - 1 - y, phys_y = x
+        let (px, py) = if self.rotated {
+            (self.phys_width.wrapping_sub(1).wrapping_sub(y), x)
+        } else {
+            (x, y)
+        };
         let bpp_bytes = self.bits_per_pixel / 8;
-        let offset = y * self.line_length + x * bpp_bytes;
+        let offset = py * self.line_length + px * bpp_bytes;
         if offset + bpp_bytes > self.mem_len {
             return;
         }
@@ -713,6 +953,7 @@ impl Framebuffer {
             DisplayBackend::NativeV2 => "native MXCFB V2",
             DisplayBackend::NativeV1 => "native MXCFB V1",
             DisplayBackend::Rm2fb { .. } => "rm2fb",
+            DisplayBackend::Rm2Stuff { .. } => "rM2-stuff",
             DisplayBackend::FbPan => "FBIOPAN (degraded)",
             DisplayBackend::None => "none",
         }
@@ -723,10 +964,20 @@ impl Framebuffer {
         x: u32, y: u32, w: u32, h: u32,
         waveform: u32, full: bool,
     ) {
+        // Rotate the refresh region to physical coordinates
+        let (rx, ry, rw, rh) = if self.rotated {
+            // 90° CCW: logical (x,y,w,h) → physical
+            let pw = self.phys_width as u32;
+            (pw.saturating_sub(y + h), x, h, w)
+        } else {
+            (x, y, w, h)
+        };
+        let (x, y, w, h) = (rx, ry, rw, rh);
         match self.backend {
             DisplayBackend::NativeV2 => self.send_update_v2(x, y, w, h, waveform, full),
             DisplayBackend::NativeV1 => self.send_update_v1(x, y, w, h, waveform, full),
             DisplayBackend::Rm2fb { msqid } => self.send_update_rm2fb(msqid, x, y, w, h, waveform, full),
+            DisplayBackend::Rm2Stuff { sock_fd } => self.send_update_rm2stuff(sock_fd, x, y, w, h, waveform, full),
             DisplayBackend::FbPan => self.send_update_fb_pan(),
             DisplayBackend::None => {}
         }
@@ -742,7 +993,7 @@ impl Framebuffer {
 
     pub fn refresh_fast(&mut self, x: u32, y: u32, w: u32, h: u32) {
         self.partial_refresh_count += 1;
-        if self.partial_refresh_count >= 20 {
+        if self.partial_refresh_count >= 200 {
             self.refresh_full();
         } else {
             self.refresh_region(x, y, w, h, WAVEFORM_MODE_DU, false);
@@ -761,7 +1012,11 @@ impl Drop for Framebuffer {
             if !self.fb0_mem.is_null() {
                 sys::munmap(self.fb0_mem as *mut sys::c_void, self.fb0_mem_len);
             }
-            // Unmap rm2fb shared memory if we used it
+            // Close rM2-stuff socket if we used it
+            if let DisplayBackend::Rm2Stuff { sock_fd } = self.backend {
+                sys::close(sock_fd);
+            }
+            // Unmap rm2fb/rM2-stuff shared memory if we used it
             if !self.rm2fb_mem.is_null() {
                 sys::munmap(self.rm2fb_mem as *mut sys::c_void, self.rm2fb_mem_len);
             }
