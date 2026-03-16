@@ -432,8 +432,10 @@ After=multi-user.target
 [Service]
 Type=simple
 ExecStart=/home/root/remarkable-ssh
-# On any exit (clean or crash), bring xochitl back so USB networking stays up
-ExecStopPost=/bin/sh -c 'systemctl start xochitl 2>/dev/null || true'
+# On any exit (clean or crash), re-enable and start xochitl so USB networking
+# stays up both now AND after reboot. Without this, hitting StartLimitBurst
+# leaves xochitl disabled and the device unreachable after the next reboot.
+ExecStopPost=/bin/sh -c 'systemctl enable xochitl 2>/dev/null; systemctl start xochitl 2>/dev/null || true'
 Restart=on-failure
 RestartSec=3
 StartLimitBurst=3

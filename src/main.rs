@@ -699,7 +699,10 @@ fn main() {
                     let touches = ti.read_events(fd_index);
                     for touch in touches {
                         if let Some(ref mut osk) = osk {
-                            if touch.y >= osk.origin_y as i32 {
+                            if touch.pressure <= 0 {
+                                // Finger lifted — reset debounce so next tap registers
+                                osk.handle_touch_up();
+                            } else if touch.y >= osk.origin_y as i32 {
                                 if let Some(bytes) = osk.handle_touch(touch.x, touch.y) {
                                     if let Err(e) = pty.write(&bytes) {
                                         eprintln!("Write to PTY failed: {}", e);
@@ -726,6 +729,18 @@ fn main() {
             if elapsed >= REFRESH_DEBOUNCE_MS || ret == 0 {
                 render_terminal(&mut fb, &term, scale);
                 render_status_bar(&mut fb, &term, scale, term_area_height, display_target);
+
+                // Alt screen switch (vim/less/tmux enter/exit) — force full GC16
+                // refresh to clear ghosting from the previous screen content.
+                if term.needs_full_refresh {
+                    term.needs_full_refresh = false;
+                    term.mark_clean();
+                    fb.refresh_full();
+                    last_refresh = Instant::now();
+                    needs_refresh = false;
+                    continue;
+                }
+
                 let (min_row, min_col, max_row, max_col) = term.mark_clean();
 
                 // Use dirty rect to refresh only the changed region
@@ -737,6 +752,13 @@ fn main() {
                     let refresh_w = refresh_w.min((fb.width as u32).saturating_sub(refresh_x));
                     let refresh_h = refresh_h.min((fb.height as u32).saturating_sub(refresh_y));
                     fb.refresh_fast(refresh_x, refresh_y, refresh_w, refresh_h);
+                    // Also refresh the status bar (sits below the terminal area)
+                    fb.refresh_fast(
+                        0,
+                        term_area_height as u32,
+                        fb.width as u32,
+                        status_bar_height as u32,
+                    );
                 } else {
                     // Fallback: refresh full terminal area + status bar
                     fb.refresh_terminal(term_area_height as u32 + status_bar_height as u32);

@@ -84,6 +84,10 @@ pub struct Terminal {
     // Bracketed paste mode
     pub bracketed_paste: bool,
 
+    // Set when switching between alt/main screen — signals that a full
+    // GC16 refresh should be used instead of DU partial to clear ghosting.
+    pub needs_full_refresh: bool,
+
     // Response buffer: bytes to send back to the PTY (e.g. DSR replies)
     response_buf: Vec<u8>,
 }
@@ -123,6 +127,7 @@ impl Terminal {
             alt_cursor_y: 0,
             using_alt_screen: false,
             bracketed_paste: false,
+            needs_full_refresh: false,
             response_buf: Vec::new(),
         }
     }
@@ -347,7 +352,10 @@ impl Terminal {
                 self.state = State::CSIParam;
             }
             b';' => {
-                self.params.push(self.current_param.unwrap_or(0));
+                // Cap params to prevent OOM from malicious input (e.g. ESC[1;2;3;...x1M)
+                if self.params.len() < 16 {
+                    self.params.push(self.current_param.unwrap_or(0));
+                }
                 self.current_param = None;
                 self.state = State::CSIParam;
             }
@@ -559,7 +567,7 @@ impl Terminal {
                 // Device Attributes (DA1) — respond as VT100
                 self.finish_params();
                 let p = if !self.params.is_empty() { self.params[0] } else { 0 };
-                if p == 0 {
+                if p == 0 && self.response_buf.len() < 1024 {
                     // ESC[?1;0c = VT101 with no options
                     self.response_buf.extend_from_slice(b"\x1b[?1;0c");
                 }
@@ -569,19 +577,22 @@ impl Terminal {
                 // Device Status Report (DSR)
                 self.finish_params();
                 let p = if !self.params.is_empty() { self.params[0] } else { 0 };
-                match p {
-                    5 => {
-                        // Status report — respond "OK"
-                        self.response_buf.extend_from_slice(b"\x1b[0n");
+                // Cap response buffer to prevent OOM from DSR floods
+                if self.response_buf.len() < 1024 {
+                    match p {
+                        5 => {
+                            // Status report — respond "OK"
+                            self.response_buf.extend_from_slice(b"\x1b[0n");
+                        }
+                        6 => {
+                            // Cursor position report — respond ESC[row;colR (1-based)
+                            let row = self.cursor_y + 1;
+                            let col = self.cursor_x + 1;
+                            let resp = format!("\x1b[{};{}R", row, col);
+                            self.response_buf.extend_from_slice(resp.as_bytes());
+                        }
+                        _ => {}
                     }
-                    6 => {
-                        // Cursor position report — respond ESC[row;colR (1-based)
-                        let row = self.cursor_y + 1;
-                        let col = self.cursor_x + 1;
-                        let resp = format!("\x1b[{};{}R", row, col);
-                        self.response_buf.extend_from_slice(resp.as_bytes());
-                    }
-                    _ => {}
                 }
                 self.state = State::Normal;
             }
@@ -934,6 +945,7 @@ impl Terminal {
         self.cursor_x = 0;
         self.cursor_y = 0;
         self.using_alt_screen = true;
+        self.needs_full_refresh = true;
         self.dirty = true;
     }
 
@@ -954,6 +966,7 @@ impl Terminal {
                 cell.dirty = true;
             }
         }
+        self.needs_full_refresh = true;
         self.dirty = true;
     }
 

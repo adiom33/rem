@@ -12,4 +12,6 @@ license = "MIT"
 opt-level = "s"
 lto = true
 strip = true
-panic = "abort"
+# NOTE: Do NOT set panic = "abort" — the panic hook in main.rs restarts
+# xochitl on crash. With abort, the hook is skipped and the tablet is left
+# with a blank screen and no way to recover without SSH.

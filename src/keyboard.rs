@@ -518,6 +518,10 @@ pub struct OnScreenKeyboard {
     pub total_height: usize,
     shift: bool,
     ctrl: bool,
+    /// Track whether a touch is currently active to debounce.
+    /// Only the initial touch-down fires a keypress; held touches are ignored
+    /// until the finger lifts (pressure drops to 0) and touches again.
+    touch_active: bool,
 }
 
 impl OnScreenKeyboard {
@@ -587,6 +591,7 @@ impl OnScreenKeyboard {
             total_height: height,
             shift: false,
             ctrl: false,
+            touch_active: false,
         }
     }
 
@@ -618,7 +623,20 @@ impl OnScreenKeyboard {
         }
     }
 
+    /// Call when a touch ends (pressure drops to 0) to reset debounce state.
+    pub fn handle_touch_up(&mut self) {
+        self.touch_active = false;
+    }
+
     pub fn handle_touch(&mut self, x: i32, y: i32) -> Option<Vec<u8>> {
+        // Debounce: only fire on the initial touch-down, not on held/dragged touches.
+        // This prevents duplicate characters from e-ink's slow refresh causing
+        // the user to hold their finger while waiting for visual feedback.
+        if self.touch_active {
+            return None;
+        }
+        self.touch_active = true;
+
         for row in &self.keys {
             for key in row {
                 if x >= key.x as i32
@@ -653,6 +671,17 @@ impl OnScreenKeyboard {
                             bytes[0] = ch - b'a' + 1;
                         } else if ch >= b'A' && ch <= b'Z' {
                             bytes[0] = ch - b'A' + 1;
+                        } else {
+                            // Ctrl + punctuation (matches physical keyboard behavior)
+                            match ch {
+                                b'[' => bytes[0] = 0x1B, // ESC
+                                b'\\' => bytes[0] = 0x1C, // SIGQUIT
+                                b']' => bytes[0] = 0x1D,  // GS
+                                b'^' => bytes[0] = 0x1E,  // RS
+                                b'_' => bytes[0] = 0x1F,  // US
+                                b' ' => bytes[0] = 0x00,  // NUL
+                                _ => {}
+                            }
                         }
                         self.ctrl = false;
                     }
