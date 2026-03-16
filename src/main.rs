@@ -615,6 +615,7 @@ fn main() {
     // ---- Main event loop ----
     let mut last_refresh = Instant::now();
     let mut needs_refresh = false;
+    let mut last_status_cursor = (0usize, 0usize); // (cursor_y, cursor_x) for status bar change detection
 
     eprintln!("Entering main loop...");
 
@@ -752,13 +753,17 @@ fn main() {
                     let refresh_w = refresh_w.min((fb.width as u32).saturating_sub(refresh_x));
                     let refresh_h = refresh_h.min((fb.height as u32).saturating_sub(refresh_y));
                     fb.refresh_fast(refresh_x, refresh_y, refresh_w, refresh_h);
-                    // Also refresh the status bar (sits below the terminal area)
-                    fb.refresh_fast(
-                        0,
-                        term_area_height as u32,
-                        fb.width as u32,
-                        status_bar_height as u32,
-                    );
+                    // Refresh status bar only if cursor position changed
+                    let cur_pos = (term.cursor_y, term.cursor_x);
+                    if cur_pos != last_status_cursor {
+                        last_status_cursor = cur_pos;
+                        fb.refresh_fast(
+                            0,
+                            term_area_height as u32,
+                            fb.width as u32,
+                            status_bar_height as u32,
+                        );
+                    }
                 } else {
                     // Fallback: refresh full terminal area + status bar
                     fb.refresh_terminal(term_area_height as u32 + status_bar_height as u32);

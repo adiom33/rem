@@ -635,7 +635,6 @@ impl OnScreenKeyboard {
         if self.touch_active {
             return None;
         }
-        self.touch_active = true;
 
         for row in &self.keys {
             for key in row {
@@ -644,6 +643,9 @@ impl OnScreenKeyboard {
                     && y >= key.y as i32
                     && y < (key.y + key.h) as i32
                 {
+                    // Key matched — set debounce flag so held touches don't repeat
+                    self.touch_active = true;
+
                     if key.label == "SH" {
                         self.shift = !self.shift;
                         return None;
