@@ -461,6 +461,7 @@ impl Terminal {
                     let x = self.cursor_x + i;
                     if x < self.cols {
                         self.grid[self.cursor_y][x] = Cell::default();
+                        self.mark_cell_dirty(self.cursor_y, x);
                     }
                 }
                 self.dirty = true;
@@ -827,7 +828,8 @@ impl Terminal {
     fn insert_lines(&mut self, n: usize) {
         let top = self.cursor_y;
         let bottom = self.scroll_bottom;
-        if top > bottom {
+        // Per VT100 spec, IL/DL are no-ops if the cursor is outside the scroll region
+        if top < self.scroll_top || top > bottom {
             return;
         }
         let count = n.min(bottom - top + 1);
@@ -850,7 +852,8 @@ impl Terminal {
     fn delete_lines(&mut self, n: usize) {
         let top = self.cursor_y;
         let bottom = self.scroll_bottom;
-        if top > bottom {
+        // Per VT100 spec, IL/DL are no-ops if the cursor is outside the scroll region
+        if top < self.scroll_top || top > bottom {
             return;
         }
         let count = n.min(bottom - top + 1);

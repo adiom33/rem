@@ -222,56 +222,63 @@ fn find_function_entry(data: &[u8], elf: &ElfInfo, literal_pool_va: u32) -> Opti
     //
     // Search backwards up to 4KB for an LDR that targets this pool entry.
 
-    let search_start = if pool_offset_in_section > 4096 {
-        pool_offset_in_section - 4096
+    let mut best_ldr_offset: Option<usize> = None;
+
+    // Search BACKWARDS from the pool entry to find the closest LDR that
+    // references it. The closest LDR is most likely the one in the function
+    // that owns this literal pool entry. Scanning forward from search_start
+    // would find the farthest LDR, which could belong to a different function.
+
+    // Search for Thumb LDR Rt, [PC, #imm8*4] (encoding T1: 0x4800-0x4FFF)
+    // imm8*4 max range = 255*4 = 1020 bytes, so only scan that far back
+    let ldr16_start = if pool_offset_in_section > 1020 {
+        pool_offset_in_section - 1020
     } else {
         0
     };
-
-    let mut best_ldr_offset: Option<usize> = None;
-
-    // Search for Thumb LDR Rt, [PC, #imm8*4] (encoding T1: 0x4800-0x4FFF)
-    let mut off = search_start;
-    while off + 2 <= pool_offset_in_section {
-        if section_start + off + 2 > data.len() { break; }
+    let mut off = pool_offset_in_section & !1; // align to 2-byte boundary
+    while off >= ldr16_start + 2 {
+        off -= 2;
+        if section_start + off + 2 > data.len() { continue; }
         let insn = u16_le(data, section_start + off);
         if (insn & 0xF800) == 0x4800 {
-            // LDR Rt, [PC, #imm8*4]
             let imm8 = (insn & 0xFF) as u32;
             let pc = section.addr + off as u32 + 4; // Thumb PC = addr + 4
             let target = (pc & !3) + (imm8 << 2);
             if target == literal_pool_va {
                 best_ldr_offset = Some(off);
-                break; // Take the first (closest to pool = most likely)
+                break; // Closest match found
             }
         }
-        off += 2; // Thumb instructions are 2-byte aligned
     }
 
-    // If we didn't find a Thumb-16 LDR, try Thumb-32 LDR.W
+    // If we didn't find a Thumb-16 LDR, try Thumb-32 LDR.W (12-bit range = 4095 bytes)
     if best_ldr_offset.is_none() {
-        off = search_start;
-        while off + 4 <= pool_offset_in_section {
-            if section_start + off + 4 > data.len() { break; }
+        let ldr32_start = if pool_offset_in_section > 4095 {
+            pool_offset_in_section - 4095
+        } else {
+            0
+        };
+        off = pool_offset_in_section & !1;
+        while off >= ldr32_start + 4 {
+            off -= 2;
+            if section_start + off + 4 > data.len() { continue; }
             let hw1 = u16_le(data, section_start + off);
             let hw2 = u16_le(data, section_start + off + 2);
-            // LDR.W Rt, [PC, #imm12]: 1111 1000 x101 1111 | Rt imm12
-            // Encoding: hw1 = 0xF8DF, hw2 = Rt(15:12) imm12(11:0)
-            // Or with U=0: hw1 = 0xF85F
+            // LDR.W Rt, [PC, #imm12]: hw1 = 0xF8DF (add) or 0xF85F (sub)
             if hw1 == 0xF8DF || hw1 == 0xF85F {
                 let imm12 = (hw2 & 0xFFF) as u32;
                 let pc = section.addr + off as u32 + 4;
                 let target = if hw1 == 0xF8DF {
-                    (pc & !3) + imm12 // Add
+                    (pc & !3) + imm12
                 } else {
-                    (pc & !3).wrapping_sub(imm12) // Subtract
+                    (pc & !3).wrapping_sub(imm12)
                 };
                 if target == literal_pool_va {
                     best_ldr_offset = Some(off);
                     break;
                 }
             }
-            off += 2;
         }
     }
 
