@@ -660,6 +660,9 @@ impl Framebuffer {
         x: u32, y: u32, w: u32, h: u32,
         waveform: u32, full: bool,
     ) {
+        if w == 0 || h == 0 {
+            return;
+        }
         // ioctl_waveform_flag tells the server this is a raw MXCFB waveform constant
         const IOCTL_WAVEFORM_FLAG: i32 = 0xf000;
 
