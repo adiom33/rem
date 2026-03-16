@@ -65,7 +65,7 @@ pub fn run(fb: &mut Framebuffer) -> LauncherChoice {
     fb.refresh_full();
 
     // Wait for touch
-    let mut input = match Input::open(screen_w as i32, screen_h as i32) {
+    let mut input = match Input::open(screen_w as i32, screen_h as i32, fb.rotated) {
         Ok(inp) => inp,
         Err(e) => {
             eprintln!("Launcher: failed to open input: {}", e);

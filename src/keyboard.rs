@@ -192,11 +192,20 @@ pub struct PhysicalKeyboard {
 
 impl PhysicalKeyboard {
     /// Open a specific keyboard device by path.
+    /// Validates that the device actually supports keyboard keys to avoid
+    /// silently grabbing the wrong device (which would prevent OSK auto-enable).
     pub fn open_path(path: &str) -> Self {
         let file = match File::open(path) {
             Ok(f) => {
-                eprintln!("Opened keyboard device: {}", path);
-                Some(f)
+                let fd = f.as_raw_fd();
+                if is_keyboard_device(fd) {
+                    let name = get_device_name(fd).unwrap_or_default();
+                    eprintln!("Opened keyboard device: {} ({})", path, name);
+                    Some(f)
+                } else {
+                    eprintln!("Warning: {} is not a keyboard device (no KEY_A..KEY_Z). Ignoring.", path);
+                    None
+                }
             }
             Err(e) => {
                 eprintln!("Warning: Cannot open keyboard device {}: {}", path, e);
@@ -252,29 +261,11 @@ impl PhysicalKeyboard {
             }
         }
 
-        // Strategy 3: Legacy fallback
-        let paths = [
-            "/dev/input/event3",
-            "/dev/input/event4",
-            "/dev/input/event2",
-            "/dev/input/event5",
-        ];
-
-        let mut file = None;
-        for path in &paths {
-            if let Ok(f) = File::open(path) {
-                eprintln!("Opened keyboard device (fallback): {}", path);
-                file = Some(f);
-                break;
-            }
-        }
-
-        if file.is_none() {
-            eprintln!("Warning: No physical keyboard device found");
-        }
+        // No keyboard found via name or capability detection
+        eprintln!("Warning: No physical keyboard device found");
 
         PhysicalKeyboard {
-            file,
+            file: None,
             mods: Modifiers::default(),
         }
     }

@@ -131,6 +131,8 @@ impl Pty {
 
     pub fn write(&self, data: &[u8]) -> Result<(), String> {
         let mut written = 0usize;
+        let mut retries = 0u32;
+        const MAX_RETRIES: u32 = 500; // 500 * 1ms = 500ms max wait
         while written < data.len() {
             let n = unsafe {
                 sys::write(
@@ -142,17 +144,20 @@ impl Pty {
             if n < 0 {
                 let err = io::Error::last_os_error();
                 if err.kind() == io::ErrorKind::WouldBlock {
-                    // Brief sleep to avoid busy-spinning when PTY buffer is full
+                    retries += 1;
+                    if retries >= MAX_RETRIES {
+                        return Err("write to PTY timed out (buffer full)".to_string());
+                    }
                     std::thread::sleep(std::time::Duration::from_millis(1));
                     continue;
                 }
                 return Err(format!("write to PTY failed: {}", err));
             }
             if n == 0 {
-                // Shouldn't happen with count > 0, but guard against infinite loop
                 return Err("write to PTY returned 0".to_string());
             }
             written += n as usize;
+            retries = 0; // Reset on successful write
         }
         Ok(())
     }
@@ -180,12 +185,22 @@ impl Drop for Pty {
     fn drop(&mut self) {
         unsafe {
             sys::close(self.master_fd);
-            // Only send SIGHUP if the child hasn't already been reaped
             let mut status: sys::c_int = 0;
             let ret = sys::waitpid(self.child_pid, &mut status, sys::WNOHANG);
             if ret == 0 {
-                // Child still running — signal it and reap
+                // Child still running — send SIGHUP and wait briefly
                 sys::kill(self.child_pid, sys::SIGHUP);
+                // Non-blocking poll for up to 2 seconds
+                for _ in 0..20 {
+                    let ret = sys::waitpid(self.child_pid, &mut status, sys::WNOHANG);
+                    if ret != 0 {
+                        return; // Reaped
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                // Still alive after 2s — escalate to SIGKILL
+                eprintln!("Child PID {} did not exit after SIGHUP, sending SIGKILL", self.child_pid);
+                sys::kill(self.child_pid, 9); // SIGKILL
                 sys::waitpid(self.child_pid, &mut status, 0);
             }
         }

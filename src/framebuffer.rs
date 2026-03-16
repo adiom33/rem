@@ -864,7 +864,7 @@ impl Framebuffer {
 
     #[inline]
     pub fn set_pixel(&mut self, x: usize, y: usize, white: bool) {
-        if x >= self.width || y >= self.height {
+        if self.mem.is_null() || x >= self.width || y >= self.height {
             return;
         }
         // Rotate logical (x,y) to physical framebuffer coordinates
@@ -906,8 +906,10 @@ impl Framebuffer {
     }
 
     pub fn clear(&mut self) {
-        unsafe {
-            ptr::write_bytes(self.mem, 0xFF, self.mem_len);
+        if !self.mem.is_null() && self.mem_len > 0 {
+            unsafe {
+                ptr::write_bytes(self.mem, 0xFF, self.mem_len);
+            }
         }
     }
 

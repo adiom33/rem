@@ -738,8 +738,12 @@ impl Terminal {
     fn scroll_up(&mut self) {
         let top = self.scroll_top;
         let bottom = self.scroll_bottom;
-        self.grid.remove(top);
-        self.grid.insert(bottom, vec![Cell::default(); self.cols]);
+        // Rotate the slice instead of remove+insert (O(n) memcpy vs O(n) element shifts)
+        self.grid[top..=bottom].rotate_left(1);
+        // Clear the new bottom row
+        for cell in &mut self.grid[bottom] {
+            *cell = Cell::default();
+        }
         for row in top..=bottom {
             for cell in &mut self.grid[row] {
                 cell.dirty = true;
@@ -752,8 +756,12 @@ impl Terminal {
     fn scroll_down(&mut self) {
         let top = self.scroll_top;
         let bottom = self.scroll_bottom;
-        self.grid.remove(bottom);
-        self.grid.insert(top, vec![Cell::default(); self.cols]);
+        // Rotate the slice instead of remove+insert
+        self.grid[top..=bottom].rotate_right(1);
+        // Clear the new top row
+        for cell in &mut self.grid[top] {
+            *cell = Cell::default();
+        }
         for row in top..=bottom {
             for cell in &mut self.grid[row] {
                 cell.dirty = true;
@@ -820,11 +828,15 @@ impl Terminal {
         let top = self.cursor_y;
         let bottom = self.scroll_bottom;
         if top > bottom {
-            return; // Cursor is outside the scroll region — nothing to do
+            return;
         }
-        for _ in 0..n.min(bottom - top + 1) {
-            self.grid.remove(bottom);
-            self.grid.insert(top, vec![Cell::default(); self.cols]);
+        let count = n.min(bottom - top + 1);
+        // Rotate right to make room at top, then clear the new lines
+        for _ in 0..count {
+            self.grid[top..=bottom].rotate_right(1);
+            for cell in &mut self.grid[top] {
+                *cell = Cell::default();
+            }
         }
         for row in top..=bottom {
             for cell in &mut self.grid[row] {
@@ -839,11 +851,15 @@ impl Terminal {
         let top = self.cursor_y;
         let bottom = self.scroll_bottom;
         if top > bottom {
-            return; // Cursor is outside the scroll region — nothing to do
+            return;
         }
-        for _ in 0..n.min(bottom - top + 1) {
-            self.grid.remove(top);
-            self.grid.insert(bottom, vec![Cell::default(); self.cols]);
+        let count = n.min(bottom - top + 1);
+        // Rotate left to remove lines at top, then clear the new bottom lines
+        for _ in 0..count {
+            self.grid[top..=bottom].rotate_left(1);
+            for cell in &mut self.grid[bottom] {
+                *cell = Cell::default();
+            }
         }
         for row in top..=bottom {
             for cell in &mut self.grid[row] {

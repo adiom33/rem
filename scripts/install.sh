@@ -26,6 +26,29 @@ run_remote() {
     ssh "${SSH_OPTS[@]}" "root@${TABLET_IP}" "$@"
 }
 
+# ---- Root partition space check ----
+check_root_space() {
+    local needed_kb="${1:-100}"
+    local label="${2:-files}"
+    local avail_kb
+    avail_kb=$(run_remote 'df -k / | tail -1 | awk "{print \$4}"' 2>/dev/null || echo "")
+    # Validate we got a number — BusyBox df or unexpected output could return garbage
+    if ! echo "$avail_kb" | grep -qE '^[0-9]+$'; then
+        echo "  WARNING: Could not parse root partition free space (got: '$avail_kb')."
+        echo "  Assuming insufficient space for safety. Check manually:"
+        echo "    ssh root@${TABLET_IP} 'df -h /'"
+        return 1
+    fi
+    if [ "$avail_kb" -lt "$needed_kb" ]; then
+        echo "  ERROR: Root partition has only ${avail_kb}KB free (need ${needed_kb}KB for ${label})."
+        echo "  The root filesystem is tiny (256MB). Do NOT install large files there."
+        echo "  Free space with: ssh root@${TABLET_IP} 'df -h /'"
+        return 1
+    fi
+    echo "  Root partition: ${avail_kb}KB free (need ${needed_kb}KB for ${label})"
+    return 0
+}
+
 # ---- Tailscale install function ----
 install_tailscale() {
     echo ""
@@ -86,19 +109,21 @@ install_tailscale() {
             ;;
     esac
 
-    # Extract and install
-    echo "  Installing on tablet..."
+    # Extract and install — IMPORTANT: install to /home partition, NOT root partition!
+    # The root filesystem is only 256MB and fills up easily.
+    # Installing 60MB of Tailscale binaries to /usr/local/bin will kill SSH/dropbear.
+    echo "  Installing on tablet (to /home/root/bin/ — safe for large binaries)..."
     run_remote "
         cd /tmp
         tar xzf '$TS_TARBALL'
-        mkdir -p /usr/local/bin
-        cp tailscale_${TS_VERSION}_${TS_ARCH}/tailscale /usr/local/bin/tailscale
-        cp tailscale_${TS_VERSION}_${TS_ARCH}/tailscaled /usr/local/bin/tailscaled
-        chmod +x /usr/local/bin/tailscale /usr/local/bin/tailscaled
+        mkdir -p /home/root/bin
+        cp tailscale_${TS_VERSION}_${TS_ARCH}/tailscale /home/root/bin/tailscale
+        cp tailscale_${TS_VERSION}_${TS_ARCH}/tailscaled /home/root/bin/tailscaled
+        chmod +x /home/root/bin/tailscale /home/root/bin/tailscaled
         rm -rf tailscale_${TS_VERSION}_${TS_ARCH} '$TS_TARBALL'
-        mkdir -p /var/lib/tailscale
+        mkdir -p /home/root/.local/share/tailscale
     "
-    echo "  Binaries installed to /usr/local/bin/"
+    echo "  Binaries installed to /home/root/bin/"
 
     # Deploy systemd service
     ssh "${SSH_OPTS[@]}" "root@${TABLET_IP}" "cat > /etc/systemd/system/tailscaled.service" <<'TSSERVICE'
@@ -109,11 +134,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/tailscaled --state=/var/lib/tailscale/tailscaled.state --socket=/var/run/tailscale/tailscaled.sock
-ExecStopPost=/usr/local/bin/tailscale down
+ExecStart=/home/root/bin/tailscaled --state=/home/root/.local/share/tailscale/tailscaled.state --socket=/var/run/tailscale/tailscaled.sock
+ExecStopPost=/home/root/bin/tailscale down
 Restart=on-failure
 RuntimeDirectory=tailscale
-StateDirectory=tailscale
 
 [Install]
 WantedBy=multi-user.target
@@ -139,26 +163,27 @@ TSSERVICE
         1)
             read -r -p "  Paste your auth key: " TS_AUTHKEY
             if [ -n "$TS_AUTHKEY" ]; then
-                run_remote "tailscale up --authkey='$TS_AUTHKEY'" 2>&1 | sed 's/^/  /'
+                # Sanitize: auth keys should be alphanumeric + hyphens only
+                CLEAN_KEY=$(echo "$TS_AUTHKEY" | tr -cd 'a-zA-Z0-9_-')
+                run_remote "/home/root/bin/tailscale up --authkey='$CLEAN_KEY'" 2>&1 | sed 's/^/  /'
                 echo ""
                 echo "  Tailscale connected!"
-                TS_IP=$(run_remote 'tailscale ip -4 2>/dev/null || echo "unknown"' | tr -d '[:space:]')
+                TS_IP=$(run_remote '/home/root/bin/tailscale ip -4 2>/dev/null || echo "unknown"' | tr -d '[:space:]')
                 echo "  Your tablet's Tailscale IP: $TS_IP"
                 echo "  You can now SSH from anywhere: ssh root@$TS_IP"
             else
                 echo "  No key provided. Run manually on the tablet:"
-                echo "    tailscale up --authkey=tskey-auth-..."
+                echo "    /home/root/bin/tailscale up --authkey=tskey-auth-..."
             fi
             ;;
         *)
             echo "  Starting Tailscale login..."
             echo "  A URL will appear below — open it on your phone or computer."
-            echo "  (Times out after 120 seconds. Run 'tailscale up' on the tablet to retry.)"
+            echo "  (Times out after 120 seconds. Run '/home/root/bin/tailscale up' on the tablet to retry.)"
             echo ""
-            # tailscale up prints the login URL to stderr; --timeout prevents indefinite hang
-            run_remote 'tailscale up --timeout=120s' 2>&1 | sed 's/^/  /'
+            run_remote '/home/root/bin/tailscale up --timeout=120s' 2>&1 | sed 's/^/  /'
             echo ""
-            TS_IP=$(run_remote 'tailscale ip -4 2>/dev/null || echo "pending"' | tr -d '[:space:]')
+            TS_IP=$(run_remote '/home/root/bin/tailscale ip -4 2>/dev/null || echo "pending"' | tr -d '[:space:]')
             if [ "$TS_IP" != "pending" ]; then
                 echo "  Tailscale connected!"
                 echo "  Your tablet's Tailscale IP: $TS_IP"
@@ -188,6 +213,16 @@ FIRMWARE_VER=$(run_remote 'grep REMARKABLE_RELEASE_VERSION /usr/share/remarkable
 DEVICE_MODEL=$(run_remote 'cat /sys/firmware/devicetree/base/model 2>/dev/null | tr -d "\0" || echo unknown' | tr -d '[:space:]')
 echo "  Device:   $DEVICE_MODEL"
 echo "  Firmware: $FIRMWARE_VER"
+
+# Check root partition has enough space for systemd service files (~5KB)
+echo ""
+echo "[preflight] Checking root partition space..."
+if ! check_root_space 500 "systemd service files"; then
+    echo ""
+    echo "  WARNING: Root partition is nearly full. Proceeding may brick the device."
+    echo "  Free space before continuing."
+    exit 1
+fi
 echo ""
 
 # ---- Step 1: Build ----
@@ -217,24 +252,49 @@ if [ -z "$HAS_SERVER" ]; then
     echo "  Attempting to download from GitHub releases..."
 
     # Try to download on the tablet directly (it has wget/curl sometimes)
+    # NOTE: We follow the GitHub "latest" redirect to get the actual filename
+    # instead of hardcoding a version, since the .so version changes across releases.
     DOWNLOAD_OK=$(run_remote '
-        mkdir -p /opt/lib
+        # Ensure /opt/lib exists on /home partition, not on root.
+        # After factory reset, /opt symlink may be broken (target wiped).
+        if [ -L /opt ] && [ ! -d /opt ]; then
+            # Broken symlink — recreate the target
+            OPTDIR=$(readlink /opt 2>/dev/null || echo "/home/opt")
+            mkdir -p "$OPTDIR/lib"
+        elif [ ! -e /opt ]; then
+            # /opt does not exist at all — create on /home and symlink
+            mkdir -p /home/opt/lib
+            ln -sf /home/opt /opt
+        else
+            mkdir -p /opt/lib
+        fi
         cd /tmp
-        # Try wget first, then curl
+        rm -f librm2fb_server.so*
+
+        # Download the latest release .so — follow redirects to get the actual file
+        SO_NAME="librm2fb_server.so.1.0.1"
+        DL_URL="https://github.com/ddvk/remarkable2-framebuffer/releases/latest/download/$SO_NAME"
         if command -v wget &>/dev/null; then
-            wget -q "https://github.com/ddvk/remarkable2-framebuffer/releases/latest/download/librm2fb_server.so.1.0.1" -O librm2fb_server.so.1.0.1 2>/dev/null
+            wget -q "$DL_URL" -O "$SO_NAME" 2>/dev/null
         elif command -v curl &>/dev/null; then
-            curl -sL "https://github.com/ddvk/remarkable2-framebuffer/releases/latest/download/librm2fb_server.so.1.0.1" -o librm2fb_server.so.1.0.1 2>/dev/null
+            curl -sL "$DL_URL" -o "$SO_NAME" 2>/dev/null
         else
             echo "NO_DOWNLOADER"
             exit 1
         fi
 
-        if [ -f librm2fb_server.so.1.0.1 ] && [ -s librm2fb_server.so.1.0.1 ]; then
-            mv librm2fb_server.so.1.0.1 /opt/lib/
-            cd /opt/lib
-            ln -sf librm2fb_server.so.1.0.1 librm2fb_server.so.1
-            echo "OK"
+        # Validate: the file must be an ELF binary, not an HTML error page
+        if [ -f "$SO_NAME" ] && [ -s "$SO_NAME" ]; then
+            MAGIC=$(head -c4 "$SO_NAME" | od -A n -t x1 | tr -d " " | head -1)
+            if [ "$MAGIC" = "7f454c46" ]; then
+                mv "$SO_NAME" /opt/lib/
+                cd /opt/lib
+                ln -sf "$SO_NAME" librm2fb_server.so.1
+                echo "OK"
+            else
+                echo "NOT_ELF"
+                rm -f "$SO_NAME"
+            fi
         else
             echo "DOWNLOAD_FAILED"
         fi
@@ -245,18 +305,24 @@ if [ -z "$HAS_SERVER" ]; then
             echo "  Downloaded and installed rm2fb server .so"
             HAS_SERVER="yes"
             ;;
+        *NOT_ELF*)
+            echo "  ERROR: Downloaded file is not a valid ELF binary (likely a 404 HTML page)."
+            echo "  The rm2fb release may have changed filenames."
+            echo "  Check https://github.com/ddvk/remarkable2-framebuffer/releases manually."
+            echo "  Then: scp <file> root@${TABLET_IP}:/opt/lib/"
+            ;;
         *NO_DOWNLOADER*)
             echo "  No wget/curl on tablet. Download manually:"
-            echo "    wget $RM2FB_RELEASE_URL/librm2fb_server.so.1.0.1"
-            echo "    scp librm2fb_server.so.1.0.1 root@${TABLET_IP}:/opt/lib/"
-            echo "    ssh root@${TABLET_IP} 'cd /opt/lib && ln -sf librm2fb_server.so.1.0.1 librm2fb_server.so.1'"
+            echo "    Visit: https://github.com/ddvk/remarkable2-framebuffer/releases"
+            echo "    scp librm2fb_server.so.* root@${TABLET_IP}:/opt/lib/"
+            echo "    ssh root@${TABLET_IP} 'cd /opt/lib && ln -sf librm2fb_server.so.* librm2fb_server.so.1'"
             ;;
         *)
             echo "  Download failed (tablet may not have internet access)."
             echo "  Download on your computer and deploy:"
-            echo "    wget $RM2FB_RELEASE_URL/librm2fb_server.so.1.0.1"
-            echo "    scp librm2fb_server.so.1.0.1 root@${TABLET_IP}:/opt/lib/"
-            echo "    ssh root@${TABLET_IP} 'cd /opt/lib && ln -sf librm2fb_server.so.1.0.1 librm2fb_server.so.1'"
+            echo "    Visit: https://github.com/ddvk/remarkable2-framebuffer/releases"
+            echo "    scp librm2fb_server.so.* root@${TABLET_IP}:/opt/lib/"
+            echo "    ssh root@${TABLET_IP} 'cd /opt/lib && ln -sf librm2fb_server.so.* librm2fb_server.so.1'"
             ;;
     esac
 else
@@ -314,14 +380,25 @@ UNIT
     if [ "$RM2FB_RUNNING" = "yes" ]; then
         echo "  rm2fb is running! (/dev/shm/swtfb.01 exists)"
     else
-        echo "  WARNING: /dev/shm/swtfb.01 not found after restart."
-        echo "  rm2fb may have failed to start. Check with:"
-        echo "    ssh root@$TABLET_IP 'journalctl -u xochitl -n 20'"
         echo ""
-        echo "  Common issues:"
+        echo "  ERROR: /dev/shm/swtfb.01 not found after restart."
+        echo "  rm2fb failed to start. ROLLING BACK the LD_PRELOAD override"
+        echo "  to prevent xochitl crash-loops on reboot."
+        echo ""
+        run_remote '
+            rm -f /etc/systemd/system/xochitl.service.d/rm2fb.conf
+            rmdir /etc/systemd/system/xochitl.service.d 2>/dev/null
+            systemctl daemon-reload
+            systemctl restart xochitl
+        ' 2>/dev/null || true
+        echo "  Override removed. xochitl restarted without rm2fb."
+        echo ""
+        echo "  Common causes:"
         echo "  - 'Missing address for function': addresses in rm2fb.conf are wrong"
         echo "  - Crash/segfault: rm2fb .so is ABI-incompatible with this firmware"
         echo "  - Qt errors: rm2fb was built against a different Qt version"
+        echo ""
+        echo "  Debug with: ssh root@$TABLET_IP 'journalctl -u xochitl -n 30'"
     fi
 else
     echo "  Skipping systemd config (missing rm2fb.conf or server .so)."
@@ -348,13 +425,19 @@ echo "  Quick-launch script deployed: $REMOTE_LAUNCHER"
 ssh "${SSH_OPTS[@]}" "root@${TABLET_IP}" "cat > /etc/systemd/system/remarkable-ssh.service" <<'SERVICE_EOF'
 [Unit]
 Description=remarkable-ssh terminal
-After=basic.target
+After=multi-user.target
+# Safety: if this service fails 3 times, re-enable xochitl so the device
+# remains accessible via SSH (USB networking depends on xochitl's boot chain).
 
 [Service]
 Type=simple
 ExecStart=/home/root/remarkable-ssh
+# On any exit (clean or crash), bring xochitl back so USB networking stays up
 ExecStopPost=/bin/sh -c 'systemctl start xochitl 2>/dev/null || true'
-Restart=no
+Restart=on-failure
+RestartSec=3
+StartLimitBurst=3
+StartLimitIntervalSec=60
 StandardInput=null
 StandardOutput=journal
 StandardError=journal
@@ -377,7 +460,11 @@ Type=simple
 ExecStartPre=/bin/sh -c 'for i in 1 2 3 4 5 6; do test -e /dev/shm/swtfb.01 && exit 0; sleep 2; done; exit 1'
 ExecStart=/home/root/remarkable-ssh --launcher
 Restart=on-failure
-RestartSec=2
+RestartSec=5
+# Give up after 5 failures in 3 minutes — fall back to xochitl
+StartLimitBurst=5
+StartLimitIntervalSec=180
+ExecStopPost=/bin/sh -c 'systemctl start xochitl 2>/dev/null || true'
 StandardInput=null
 StandardOutput=journal
 StandardError=journal
@@ -530,4 +617,4 @@ echo "  ssh root@$TABLET_IP ./term-mode terminal   # straight to terminal"
 echo "  ssh root@$TABLET_IP ./term-mode reader     # normal e-reader"
 echo ""
 echo "To undo everything:"
-echo "  ssh root@$TABLET_IP './term-mode reader; systemctl disable remarkable-launcher; rm /etc/systemd/system/remarkable-ssh.service /etc/systemd/system/remarkable-launcher.service; systemctl daemon-reload; systemctl restart xochitl'"
+echo "  ssh root@$TABLET_IP './term-mode reader; systemctl disable remarkable-launcher tailscaled 2>/dev/null; rm -f /etc/systemd/system/remarkable-ssh.service /etc/systemd/system/remarkable-launcher.service /etc/systemd/system/tailscaled.service /etc/systemd/system/xochitl.service.d/rm2fb.conf /etc/rm2fb.conf; rmdir /etc/systemd/system/xochitl.service.d 2>/dev/null; systemctl daemon-reload; systemctl restart xochitl'"

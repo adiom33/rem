@@ -41,7 +41,8 @@ fn print_usage() {
     eprintln!("  --scale N       Font scale factor (default: 2)");
     eprintln!("  --fb PATH       Framebuffer device (default: /dev/fb0)");
     eprintln!("  --shell CMD     Shell to run if no SSH target given (default: /bin/sh)");
-    eprintln!("  --keyboard      Enable on-screen virtual keyboard");
+    eprintln!("  --keyboard      Enable on-screen virtual keyboard (auto-enabled if no physical keyboard)");
+    eprintln!("  --no-keyboard   Disable on-screen keyboard (even if no physical keyboard found)");
     eprintln!("  --kb PATH       Keyboard device path (e.g. /dev/input/event3)");
     eprintln!("  --ssh-cmd CMD   SSH client binary (default: ssh, fallback: dbclient)");
     eprintln!("  --tmux          Auto-attach/create tmux session on remote host");
@@ -72,6 +73,7 @@ struct Config {
     ssh_cmd: String,
     ssh_target: Option<String>,
     show_keyboard: bool,
+    no_keyboard: bool,
     kb_path: Option<String>,
     tmux: bool,
     remote_cmd: Option<String>,
@@ -89,6 +91,7 @@ fn parse_args() -> Config {
         ssh_cmd: "ssh".to_string(),
         ssh_target: None,
         show_keyboard: false,
+        no_keyboard: false,
         kb_path: None,
         tmux: false,
         remote_cmd: None,
@@ -126,6 +129,9 @@ fn parse_args() -> Config {
             }
             "--keyboard" => {
                 config.show_keyboard = true;
+            }
+            "--no-keyboard" => {
+                config.no_keyboard = true;
             }
             "--kb" => {
                 i += 1;
@@ -432,8 +438,33 @@ fn main() {
     let char_w = font::FONT_WIDTH * scale;
     let char_h = font::FONT_HEIGHT * scale;
 
+    // ---- Open physical keyboard ----
+    let mut phys_kb = if let Some(ref path) = config.kb_path {
+        PhysicalKeyboard::open_path(path)
+    } else {
+        PhysicalKeyboard::open()
+    };
+
+    let has_physical_kb = phys_kb.fd().is_some();
+
+    // ---- Decide whether to show on-screen keyboard ----
+    // --no-keyboard: explicitly disable (e.g., display-only use)
+    // --keyboard: explicitly enable (even alongside physical keyboard)
+    // Default: auto-enable if no physical keyboard detected
+    let show_keyboard = if config.no_keyboard {
+        false
+    } else if config.show_keyboard {
+        true
+    } else if !has_physical_kb {
+        eprintln!("No physical keyboard detected — enabling on-screen keyboard automatically.");
+        eprintln!("  Use --no-keyboard to disable.");
+        true
+    } else {
+        false
+    };
+
     // ---- Calculate terminal dimensions ----
-    let kb_height = if config.show_keyboard {
+    let kb_height = if show_keyboard {
         (fb.height / 3).max(char_h * 5)
     } else {
         0
@@ -461,8 +492,8 @@ fn main() {
     // ---- Create terminal emulator ----
     let mut term = Terminal::new(term_cols, term_rows);
 
-    // ---- Create on-screen keyboard (optional) ----
-    let mut osk = if config.show_keyboard {
+    // ---- Create on-screen keyboard ----
+    let mut osk = if show_keyboard {
         Some(OnScreenKeyboard::new(
             0,
             fb.height - kb_height,
@@ -473,15 +504,12 @@ fn main() {
         None
     };
 
-    // ---- Open physical keyboard ----
-    let mut phys_kb = if let Some(ref path) = config.kb_path {
-        PhysicalKeyboard::open_path(path)
+    // ---- Open touch input (only needed for on-screen keyboard) ----
+    let mut touch_input = if show_keyboard {
+        Input::open(fb.width as i32, fb.height as i32, fb.rotated).ok()
     } else {
-        PhysicalKeyboard::open()
+        None
     };
-
-    // ---- Open touch input ----
-    let mut touch_input = Input::open(fb.width as i32, fb.height as i32).ok();
 
     // ---- Determine command to run ----
     let (command, args): (String, Vec<String>) = if let Some(ref target) = config.ssh_target {

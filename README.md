@@ -356,15 +356,15 @@ remarkable-ssh user@100.64.0.5
 ### Managing Tailscale
 
 ```bash
-ssh root@10.11.99.1 tailscale status    # see connected devices
-ssh root@10.11.99.1 tailscale down      # disconnect
-ssh root@10.11.99.1 tailscale up        # reconnect
+ssh root@10.11.99.1 /home/root/bin/tailscale status    # see connected devices
+ssh root@10.11.99.1 /home/root/bin/tailscale down      # disconnect
+ssh root@10.11.99.1 /home/root/bin/tailscale up        # reconnect
 ```
 
 To uninstall:
 
 ```bash
-ssh root@10.11.99.1 'systemctl stop tailscaled; systemctl disable tailscaled; rm /usr/local/bin/tailscale /usr/local/bin/tailscaled /etc/systemd/system/tailscaled.service; systemctl daemon-reload'
+ssh root@10.11.99.1 'systemctl stop tailscaled; systemctl disable tailscaled; rm /home/root/bin/tailscale /home/root/bin/tailscaled /etc/systemd/system/tailscaled.service; systemctl daemon-reload'
 ```
 
 ## Keyboard Support

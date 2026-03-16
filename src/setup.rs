@@ -312,11 +312,11 @@ fn find_function_entry(data: &[u8], elf: &ElfInfo, literal_pool_va: u32) -> Opti
         }
     }
 
-    // Fallback: if we couldn't find a clean prologue, return the LDR's
-    // approximate function area (rounded to 16-byte alignment before it).
-    // This is a guess but better than nothing.
-    let approx = (section.addr + ldr_offset as u32) & !0xF;
-    Some(approx | 1)
+    // Could not find a clean function prologue (PUSH {... LR}).
+    // Return None rather than guessing — a wrong address would cause
+    // xochitl to crash when rm2fb hooks the function, potentially bricking the device.
+    eprintln!("    WARNING: LDR found at offset 0x{:x} but no function prologue nearby", ldr_offset);
+    None
 }
 
 // ---- Public interface ----
