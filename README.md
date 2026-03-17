@@ -17,6 +17,21 @@ your reMarkable goes right back to being an e-reader.
 **After setup:** You don't need the computer anymore. The tablet boots into a
 launcher menu where you choose Terminal or Reader. See [Boot Modes](#boot-modes).
 
+## Known Limitations
+
+This is a working prototype, not a polished terminal emulator. Be aware of:
+
+| Area | Status |
+|------|--------|
+| **Display without rm2fb** | Degraded (faint text, no waveform control). Requires `--allow-degraded` flag. |
+| **Font / Unicode** | ASCII + box-drawing + block elements. No accented chars, CJK, or emoji. |
+| **Terminal emulation** | Bold, inverse, cursor movement, scroll regions, alt screen, bracketed paste. No underline, dim, strikethrough, or 256-color. |
+| **Shell, less, man** | Expected to work well |
+| **vim (no plugins)** | Expected to work |
+| **tmux (basic)** | Expected to work (borders render correctly) |
+| **vim with plugins, htop** | Experimental — may have visual glitches |
+| **Fast scrolling** | Usable but sluggish on e-ink (batched 50ms refresh) |
+
 ## How It Works
 
 Your reMarkable connects to the target machine over SSH (the same way you'd
@@ -233,6 +248,7 @@ remarkable-ssh --launcher
 | `--ssh-args ARGS` | Extra arguments for SSH, comma-separated |
 | `--launcher` | Show the boot menu (Terminal / Reader chooser) |
 | `--setup` | Auto-extract rm2fb addresses and write `/etc/rm2fb.conf` (run on tablet) |
+| `--allow-degraded` | Allow the degraded FBIOPAN display fallback (faint text, no waveforms) |
 | `--help` | Show help |
 
 ### About `--tmux`
@@ -504,7 +520,7 @@ The built-in terminal emulator is compatible with most command-line programs:
 - Alternate screen buffer (so vim/tmux/less switch cleanly)
 - Cursor show/hide
 - Application cursor keys (arrow keys in vim, etc.)
-- UTF-8 output (non-ASCII characters display as `?` -- the font is ASCII-only)
+- UTF-8 output with box-drawing and block element glyphs (unsupported characters show as a filled box)
 
 ## E-Ink Tips
 
@@ -534,7 +550,7 @@ If ghosting bothers you, press Ctrl+L to trigger a full redraw in most shells.
 | **SSH connection refused** | Make sure the target server has SSH running and is reachable from the reMarkable's network. |
 | **"command not found: ssh"** | The reMarkable may only have `dbclient` (Dropbear SSH client). The app auto-detects this, but you can also use `--ssh-cmd dbclient`. |
 | **Stuck on blank screen** | The app should restart xochitl automatically. If it didn't, SSH into your reMarkable and run `systemctl start xochitl`. |
-| **Characters show as `?`** | The built-in font only covers ASCII (English letters, numbers, symbols). Non-ASCII characters (accented letters, emoji, CJK) show as `?`. |
+| **Characters show as a filled box** | The built-in font covers ASCII, box-drawing (U+2500-U+257F), and block elements (U+2580-U+259F). Other Unicode characters (accented letters, emoji, CJK) show as a filled box. |
 | **SSH host key changed** | If you reimaged or updated firmware, remove the old key: `ssh-keygen -R 10.11.99.1` |
 | **Launcher menu doesn't appear** | The launcher requires rm2fb (it draws on shared memory while xochitl runs). Check that xochitl is running with rm2fb: `test -e /dev/shm/swtfb.01 && echo ok`. If not, re-run `install.sh`. |
 
@@ -548,7 +564,7 @@ rem/
     main.rs               # Entry point, event loop, launcher mode, display refresh
     launcher.rs           # Boot menu UI (Terminal / Reader chooser)
     framebuffer.rs         # E-ink display (native ioctls or rm2fb auto-detected)
-    font.rs               # Built-in 8x16 pixel bitmap font (95 ASCII glyphs)
+    font.rs               # Built-in 8x16 pixel bitmap font (ASCII + box-drawing + block elements)
     terminal.rs           # VT100/xterm escape sequence parser
     keyboard.rs           # Physical keyboard + on-screen keyboard
     input.rs              # Touchscreen and pen input handling

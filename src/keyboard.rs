@@ -4,6 +4,8 @@ use std::fs::File;
 use std::io::Read;
 use std::os::unix::io::{AsRawFd, RawFd};
 
+use std::sync::atomic::Ordering;
+
 use crate::font;
 use crate::framebuffer::Framebuffer;
 use crate::sys;
@@ -331,6 +333,12 @@ impl PhysicalKeyboard {
                     continue;
                 }
                 _ => {}
+            }
+
+            // Ctrl+Alt+T: exit terminal (return to reader)
+            if ev.code == KEY_T && self.mods.ctrl && self.mods.alt {
+                crate::SIGNAL_EXIT.store(true, Ordering::SeqCst);
+                continue;
             }
 
             if let Some(bytes) = self.map_key(ev.code, app_cursor_keys) {

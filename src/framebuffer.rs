@@ -250,7 +250,7 @@ pub struct Framebuffer {
 unsafe impl Send for Framebuffer {}
 
 impl Framebuffer {
-    pub fn open(path: &str) -> Result<Self, String> {
+    pub fn open(path: &str, allow_degraded: bool) -> Result<Self, String> {
         // Log device info upfront for diagnostics
         let device_model = detect_device_model();
         let firmware_ver = read_firmware_version();
@@ -383,9 +383,16 @@ impl Framebuffer {
             return Ok(fb);
         }
 
-        // rm2fb not available — try FBIOPAN_DISPLAY fallback
-        if fb.probe_fb_pan() {
-            return Ok(fb);
+        // rm2fb not available — try FBIOPAN_DISPLAY fallback (degraded quality)
+        if allow_degraded {
+            if fb.probe_fb_pan() {
+                return Ok(fb);
+            }
+        } else {
+            eprintln!();
+            eprintln!("rm2fb not available. FBIOPAN fallback is degraded (faint text, no waveforms).");
+            eprintln!("To use it anyway, pass --allow-degraded");
+            eprintln!();
         }
 
         // Nothing works — give detailed guidance
@@ -926,8 +933,8 @@ impl Framebuffer {
         }
     }
 
-    pub fn draw_char(&mut self, ch: u8, x: usize, y: usize, scale: usize, inverse: bool) {
-        let glyph = font::glyph(ch);
+    pub fn draw_char(&mut self, ch: char, x: usize, y: usize, scale: usize, inverse: bool) {
+        let glyph = font::glyph_char(ch);
         for row in 0..font::FONT_HEIGHT {
             let byte = glyph[row];
             for col in 0..font::FONT_WIDTH {
@@ -948,7 +955,7 @@ impl Framebuffer {
 
     pub fn draw_str(&mut self, s: &str, x: usize, y: usize, scale: usize, inverse: bool) {
         let char_w = font::FONT_WIDTH * scale;
-        for (i, ch) in s.bytes().enumerate() {
+        for (i, ch) in s.chars().enumerate() {
             self.draw_char(ch, x + i * char_w, y, scale, inverse);
         }
     }

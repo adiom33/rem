@@ -79,7 +79,9 @@ struct Config {
     remote_cmd: Option<String>,
     ssh_extra_args: Vec<String>,
     launcher: bool,
+    hotkey: bool,
     landscape: Option<bool>, // None=auto, Some(true)=force landscape, Some(false)=force portrait
+    allow_degraded: bool,
 }
 
 fn parse_args() -> Config {
@@ -97,7 +99,9 @@ fn parse_args() -> Config {
         remote_cmd: None,
         ssh_extra_args: Vec::new(),
         launcher: false,
+        hotkey: false,
         landscape: None,
+        allow_degraded: false,
     };
 
     let mut i = 1;
@@ -173,6 +177,12 @@ fn parse_args() -> Config {
             }
             "--launcher" => {
                 config.launcher = true;
+            }
+            "--hotkey" => {
+                config.hotkey = true;
+            }
+            "--allow-degraded" => {
+                config.allow_degraded = true;
             }
             "--setup" => {
                 // Run rm2fb auto-setup and exit
@@ -333,6 +343,198 @@ fn stop_xochitl() {
     }));
 }
 
+fn run_hotkey_mode() {
+    use std::fs::{File, OpenOptions};
+    use std::io::Read;
+    use std::os::unix::io::AsRawFd;
+
+    const EV_SYN: u16 = 0;
+    const EV_KEY: u16 = 1;
+    const EV_REP: u16 = 0x14;
+    const KEY_LEFTCTRL: u16 = 29;
+    const KEY_LEFTALT: u16 = 56;
+    const KEY_T: u16 = 20;
+
+    // EVIOCGRAB = _IOW('E', 0x90, int) = 0x40044590
+    const EVIOCGRAB: sys::c_ulong = 0x40044590;
+
+    // uinput ioctls
+    const UI_DEV_SETUP: sys::c_ulong = 0x405c5503;  // _IOW('U', 3, uinput_setup)
+    const UI_DEV_CREATE: sys::c_ulong = 0x5501;      // _IO('U', 1)
+    const UI_DEV_DESTROY: sys::c_ulong = 0x5502;     // _IO('U', 2)
+    const UI_SET_EVBIT: sys::c_ulong = 0x40045564;   // _IOW('U', 100, int)
+    const UI_SET_KEYBIT: sys::c_ulong = 0x40045565;  // _IOW('U', 101, int)
+
+    // Find the keyboard
+    let mut kb_fd = -1i32;
+    let mut kb_file: Option<File> = None;
+    for i in 0..20 {
+        let path = format!("/dev/input/event{}", i);
+        if let Ok(f) = File::open(&path) {
+            let fd = f.as_raw_fd();
+            let mut name_buf = [0u8; 256];
+            let ioctl_num: sys::c_ulong = (2 << 30) | (256 << 16) | (0x45 << 8) | 0x06;
+            let ret = unsafe { sys::ioctl(fd, ioctl_num, name_buf.as_mut_ptr()) };
+            if ret > 0 {
+                let name = String::from_utf8_lossy(&name_buf[..ret as usize]);
+                if name.to_lowercase().contains("keyboard") {
+                    eprintln!("Hotkey daemon: found keyboard at {} ({})", path, name.trim_end_matches('\0'));
+                    kb_fd = fd;
+                    kb_file = Some(f);
+                    break;
+                }
+            }
+        }
+    }
+
+    let mut kb_file = match kb_file {
+        Some(f) => f,
+        None => {
+            eprintln!("Hotkey daemon: no keyboard found, falling back to trigger file mode");
+            run_trigger_mode();
+            return;
+        }
+    };
+
+    // Grab the keyboard exclusively so xochitl can't use it
+    let grab: sys::c_int = 1;
+    let ret = unsafe { sys::ioctl(kb_fd, EVIOCGRAB, &grab) };
+    if ret < 0 {
+        eprintln!("Hotkey daemon: EVIOCGRAB failed (errno {}), falling back to trigger mode", sys::errno());
+        run_trigger_mode();
+        return;
+    }
+    eprintln!("Hotkey daemon: grabbed keyboard exclusively");
+
+    // Create a virtual keyboard via uinput to forward events to xochitl
+    let uinput_file = match OpenOptions::new().write(true).open("/dev/uinput") {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("Hotkey daemon: can't open /dev/uinput: {}, releasing grab", e);
+            let ungrab: sys::c_int = 0;
+            unsafe { sys::ioctl(kb_fd, EVIOCGRAB, &ungrab); }
+            run_trigger_mode();
+            return;
+        }
+    };
+    let ui_fd = uinput_file.as_raw_fd();
+
+    // Set up the virtual keyboard capabilities
+    unsafe {
+        // Enable EV_SYN, EV_KEY, EV_REP
+        sys::ioctl(ui_fd, UI_SET_EVBIT, EV_SYN as sys::c_int);
+        sys::ioctl(ui_fd, UI_SET_EVBIT, EV_KEY as sys::c_int);
+        sys::ioctl(ui_fd, UI_SET_EVBIT, EV_REP as sys::c_int);
+
+        // Enable all key codes 0-255
+        for key in 0..256 {
+            sys::ioctl(ui_fd, UI_SET_KEYBIT, key as sys::c_int);
+        }
+    }
+
+    // uinput_setup struct: u16 bustype, u16 vendor, u16 product, u16 version, char[80] name, u32 ff_effects_max
+    // Total = 2+2+2+2+80+4 = 92 bytes
+    let mut setup = [0u8; 92];
+    // bus=0x19, vendor=0x2edd, product=0x0001, version=0x0100 (match real keyboard)
+    setup[0..2].copy_from_slice(&0x0019u16.to_ne_bytes());
+    setup[2..4].copy_from_slice(&0x2eddu16.to_ne_bytes());
+    setup[4..6].copy_from_slice(&0x0001u16.to_ne_bytes());
+    setup[6..8].copy_from_slice(&0x0100u16.to_ne_bytes());
+    let name = b"rM_Keyboard_Proxy";
+    setup[8..8 + name.len()].copy_from_slice(name);
+
+    let ret = unsafe { sys::ioctl(ui_fd, UI_DEV_SETUP, setup.as_ptr()) };
+    if ret < 0 {
+        eprintln!("Hotkey daemon: UI_DEV_SETUP failed (errno {})", sys::errno());
+    }
+
+    let ret = unsafe { sys::ioctl(ui_fd, UI_DEV_CREATE, 0 as sys::c_int) };
+    if ret < 0 {
+        eprintln!("Hotkey daemon: UI_DEV_CREATE failed (errno {})", sys::errno());
+        let ungrab: sys::c_int = 0;
+        unsafe { sys::ioctl(kb_fd, EVIOCGRAB, &ungrab); }
+        return;
+    }
+
+    eprintln!("Hotkey daemon: virtual keyboard created, forwarding events (Ctrl+Alt+T to launch terminal)");
+
+    // Give xochitl time to discover the new virtual keyboard
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    let mut ctrl = false;
+    let mut alt = false;
+    let mut buf = [0u8; 16];
+    let mut terminal_active = false;
+
+    loop {
+        if kb_file.read_exact(&mut buf).is_err() {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            continue;
+        }
+
+        let ev_type = u16::from_ne_bytes([buf[8], buf[9]]);
+        let ev_code = u16::from_ne_bytes([buf[10], buf[11]]);
+        let ev_value = i32::from_ne_bytes([buf[12], buf[13], buf[14], buf[15]]);
+
+        // Track modifier state
+        if ev_type == EV_KEY {
+            match ev_code {
+                KEY_LEFTCTRL => ctrl = ev_value != 0,
+                KEY_LEFTALT => alt = ev_value != 0,
+                KEY_T if ev_value == 1 && ctrl && alt && !terminal_active => {
+                    eprintln!("Hotkey daemon: Ctrl+Alt+T — launching terminal");
+                    terminal_active = true;
+
+                    // Stop forwarding to xochitl while terminal is active
+                    let exe = std::env::current_exe()
+                        .unwrap_or_else(|_| std::path::PathBuf::from("/opt/bin/remarkable-ssh"));
+                    // Release grab so terminal can use the keyboard directly
+                    let ungrab: sys::c_int = 0;
+                    unsafe { sys::ioctl(kb_fd, EVIOCGRAB, &ungrab); }
+
+                    match std::process::Command::new(&exe).status() {
+                        Ok(s) => eprintln!("Hotkey daemon: terminal exited ({})", s),
+                        Err(e) => eprintln!("Hotkey daemon: failed to launch: {}", e),
+                    }
+
+                    // Re-grab keyboard
+                    let grab: sys::c_int = 1;
+                    unsafe { sys::ioctl(kb_fd, EVIOCGRAB, &grab); }
+
+                    ctrl = false;
+                    alt = false;
+                    terminal_active = false;
+                    continue;
+                }
+                _ => {}
+            }
+        }
+
+        // Forward the event to the virtual keyboard (for xochitl)
+        unsafe {
+            sys::write(ui_fd, buf.as_ptr() as *const sys::c_void, 16);
+        }
+    }
+}
+
+/// Fallback: watch for /tmp/rem-terminal trigger file
+fn run_trigger_mode() {
+    eprintln!("Trigger mode: create /tmp/rem-terminal to launch terminal");
+    loop {
+        if std::path::Path::new("/tmp/rem-terminal").exists() {
+            let _ = std::fs::remove_file("/tmp/rem-terminal");
+            eprintln!("Trigger: launching terminal");
+            let exe = std::env::current_exe()
+                .unwrap_or_else(|_| std::path::PathBuf::from("/opt/bin/remarkable-ssh"));
+            match std::process::Command::new(&exe).status() {
+                Ok(s) => eprintln!("Trigger: terminal exited ({})", s),
+                Err(e) => eprintln!("Trigger: failed to launch: {}", e),
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+}
+
 fn run_launcher_mode(config: &Config) {
     // Collect args to forward to the terminal subprocess (everything except --launcher)
     let forward_args: Vec<String> = env::args()
@@ -344,7 +546,7 @@ fn run_launcher_mode(config: &Config) {
         .unwrap_or_else(|_| std::path::PathBuf::from("/home/root/remarkable-ssh"));
 
     loop {
-        let mut fb = match Framebuffer::open(&config.fb_path) {
+        let mut fb = match Framebuffer::open(&config.fb_path, config.allow_degraded) {
             Ok(fb) => fb,
             Err(e) => {
                 eprintln!("Launcher: {}", e);
@@ -400,8 +602,14 @@ fn main() {
         return;
     }
 
+    // ---- Hotkey daemon mode ----
+    if config.hotkey {
+        run_hotkey_mode();
+        return;
+    }
+
     // ---- Open framebuffer ----
-    let mut fb = match Framebuffer::open(&config.fb_path) {
+    let mut fb = match Framebuffer::open(&config.fb_path, config.allow_degraded) {
         Ok(fb) => fb,
         Err(e) => {
             eprintln!("ERROR: {}", e);

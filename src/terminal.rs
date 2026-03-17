@@ -4,7 +4,7 @@
 
 #[derive(Debug, Clone, Copy)]
 pub struct Cell {
-    pub ch: u8,
+    pub ch: char,
     pub bold: bool,
     pub inverse: bool,
     pub dirty: bool,
@@ -13,7 +13,7 @@ pub struct Cell {
 impl Default for Cell {
     fn default() -> Self {
         Cell {
-            ch: b' ',
+            ch: ' ',
             bold: false,
             inverse: false,
             dirty: true,
@@ -134,15 +134,14 @@ impl Terminal {
 
     /// Process a chunk of bytes from the PTY.
     /// Handles UTF-8 decoding: ASCII bytes pass through directly,
-    /// multi-byte UTF-8 sequences are decoded and non-ASCII codepoints
-    /// render as '?' to prevent state corruption.
+    /// multi-byte UTF-8 sequences are decoded to full Unicode codepoints.
     pub fn process(&mut self, data: &[u8]) {
         for &byte in data {
             // If we're inside an escape/CSI/OSC sequence, bytes are always ASCII control
             if self.state != State::Normal {
                 // Abort any in-progress UTF-8 sequence
                 if self.utf8_len > 0 {
-                    self.put_char(b'?');
+                    self.put_char('\u{FFFD}');
                     self.utf8_len = 0;
                     self.utf8_idx = 0;
                 }
@@ -158,14 +157,15 @@ impl Terminal {
                     self.utf8_buf[self.utf8_idx] = byte;
                     self.utf8_idx += 1;
                     if self.utf8_idx == self.utf8_len {
-                        // Complete sequence — render placeholder
-                        self.put_char(b'?');
+                        // Complete sequence — decode to char
+                        let ch = Self::decode_utf8(&self.utf8_buf[..self.utf8_len]);
+                        self.put_char(ch);
                         self.utf8_len = 0;
                         self.utf8_idx = 0;
                     }
                 } else {
-                    // Invalid continuation — emit placeholder for broken sequence
-                    self.put_char(b'?');
+                    // Invalid continuation — emit replacement for broken sequence
+                    self.put_char('\u{FFFD}');
                     self.utf8_len = 0;
                     self.utf8_idx = 0;
                     // Re-process this byte
@@ -175,6 +175,23 @@ impl Terminal {
                 self.process_byte_utf8(byte);
             }
         }
+    }
+
+    /// Decode a complete UTF-8 byte sequence into a char.
+    fn decode_utf8(bytes: &[u8]) -> char {
+        let cp = match bytes.len() {
+            2 => ((bytes[0] as u32 & 0x1F) << 6)
+               | (bytes[1] as u32 & 0x3F),
+            3 => ((bytes[0] as u32 & 0x0F) << 12)
+               | ((bytes[1] as u32 & 0x3F) << 6)
+               | (bytes[2] as u32 & 0x3F),
+            4 => ((bytes[0] as u32 & 0x07) << 18)
+               | ((bytes[1] as u32 & 0x3F) << 12)
+               | ((bytes[2] as u32 & 0x3F) << 6)
+               | (bytes[3] as u32 & 0x3F),
+            _ => 0xFFFD,
+        };
+        char::from_u32(cp).unwrap_or('\u{FFFD}')
     }
 
     /// Classify a byte and either process it directly or start a UTF-8 sequence.
@@ -198,8 +215,8 @@ impl Terminal {
             self.utf8_len = 4;
             self.utf8_idx = 1;
         } else {
-            // Stray continuation byte or invalid — render placeholder
-            self.put_char(b'?');
+            // Stray continuation byte or invalid — render replacement
+            self.put_char('\u{FFFD}');
         }
     }
 
@@ -271,8 +288,8 @@ impl Terminal {
                 // Other control chars - ignore
             }
             _ => {
-                // Printable character
-                self.put_char(byte);
+                // Printable ASCII character
+                self.put_char(byte as char);
             }
         }
     }
@@ -714,7 +731,7 @@ impl Terminal {
         self.dirty_max_col = self.cols.saturating_sub(1);
     }
 
-    fn put_char(&mut self, ch: u8) {
+    fn put_char(&mut self, ch: char) {
         if self.cursor_x >= self.cols {
             // Line wrap
             self.cursor_x = 0;
@@ -828,7 +845,7 @@ impl Terminal {
         let blank = Cell::default();
         for col in start..end {
             if self.grid[row][col].ch != blank.ch || self.grid[row][col].inverse != blank.inverse {
-                self.grid[row][col] = blank.clone();
+                self.grid[row][col] = blank;
                 self.grid[row][col].dirty = true;
                 self.mark_cell_dirty(row, col);
             }
@@ -890,7 +907,7 @@ impl Terminal {
         // Find rightmost non-blank cell before delete to limit dirty range
         let mut last_nonblank = x;
         for col in (x..self.cols).rev() {
-            if self.grid[row][col].ch != b' ' && self.grid[row][col].ch != 0 {
+            if self.grid[row][col].ch != ' ' && self.grid[row][col].ch != '\0' {
                 last_nonblank = col;
                 break;
             }
