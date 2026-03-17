@@ -908,10 +908,20 @@ impl Framebuffer {
         }
     }
 
+    /// Fill the entire framebuffer with white (0xFF).
     pub fn clear(&mut self) {
         if !self.mem.is_null() && self.mem_len > 0 {
             unsafe {
                 ptr::write_bytes(self.mem, 0xFF, self.mem_len);
+            }
+        }
+    }
+
+    /// Fill the entire framebuffer with black (0x00).
+    pub fn fill_black(&mut self) {
+        if !self.mem.is_null() && self.mem_len > 0 {
+            unsafe {
+                ptr::write_bytes(self.mem, 0x00, self.mem_len);
             }
         }
     }

@@ -558,53 +558,141 @@ fn main() {
         }
     };
 
-    // ---- Splash screen ----
+    // ---- Warp splash screen ----
     {
-        fb.clear();
-
         let screen_w = fb.width;
         let screen_h = fb.height;
+        let cx = screen_w / 2;
+        let cy = screen_h / 2;
+        let max_r = screen_w.max(screen_h) * 3 / 4;
 
-        // Title: "rem" at 6x scale
-        let title_scale = 6;
-        let title = "rem";
+        // Simple LCG PRNG (no dependencies needed)
+        let mut rng_state: u32 = 0xDEAD_BEEFu32;
+        let rng_next = |state: &mut u32| -> u32 {
+            *state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+            *state
+        };
+
+        // Pre-compute sin/cos table (256 angles covering 0..2*PI)
+        let mut sin_table = [0i32; 256];
+        let mut cos_table = [0i32; 256];
+        for i in 0..256 {
+            let angle = (i as f32) * std::f32::consts::TAU / 256.0;
+            sin_table[i] = (angle.sin() * 1024.0) as i32; // fixed-point 10.10
+            cos_table[i] = (angle.cos() * 1024.0) as i32;
+        }
+
+        struct Star {
+            angle_idx: usize, // index into sin/cos tables
+            radius: i32,      // distance from center (pixels)
+            speed: i32,        // pixels per frame
+        }
+
+        let num_stars = 80;
+        let mut stars: Vec<Star> = (0..num_stars)
+            .map(|_| Star {
+                angle_idx: (rng_next(&mut rng_state) % 256) as usize,
+                radius: (rng_next(&mut rng_state) % max_r as u32) as i32,
+                speed: 3 + (rng_next(&mut rng_state) % 12) as i32,
+            })
+            .collect();
+
+        // Draw initial frame: black background with title
+        fb.fill_black();
+
+        // Title "rem" centered — white on black
+        let title_scale = 8;
         let title_cw = font::FONT_WIDTH * title_scale;
         let title_ch = font::FONT_HEIGHT * title_scale;
+        let title = "rem";
         let title_x = (screen_w - title.len() * title_cw) / 2;
-        let title_y = screen_h / 4;
-        fb.draw_str(title, title_x, title_y, title_scale, false);
+        let title_y = (screen_h - title_ch) / 2 - title_ch / 2;
+        fb.draw_str(title, title_x, title_y, title_scale, true); // inverse = white on black
 
-        // Underline beneath title
-        let line_w = title.len() * title_cw + title_cw;
-        let line_x = (screen_w - line_w) / 2;
-        let line_y = title_y + title_ch + char_h / 4;
-        fb.draw_hline(line_x, line_y, line_w);
-
-        // Subtitle
-        let sub_scale = scale;
-        let sub_cw = font::FONT_WIDTH * sub_scale;
+        // Subtitle below title
+        let sub_cw = font::FONT_WIDTH * scale;
         let subtitle = "remarkable terminal";
         let sub_x = (screen_w - subtitle.len() * sub_cw) / 2;
-        let sub_y = line_y + char_h;
-        fb.draw_str(subtitle, sub_x, sub_y, sub_scale, false);
+        let sub_y = title_y + title_ch + char_h / 2;
+        fb.draw_str(subtitle, sub_x, sub_y, scale, true);
 
-        // Connection target
-        let target_str = if config.ssh_target.is_some() {
-            format!("> {}", display_target)
-        } else {
-            format!("> {}", display_target)
-        };
+        // Target below subtitle
+        let target_str = format!("> {}", display_target);
         let target_x = (screen_w - target_str.len() * sub_cw) / 2;
         let target_y = sub_y + char_h * 2;
-        fb.draw_str(&target_str, target_x, target_y, sub_scale, false);
+        fb.draw_str(&target_str, target_x, target_y, scale, true);
 
         fb.refresh_full();
+        std::thread::sleep(std::time::Duration::from_millis(600));
 
-        // Brief pause so the splash is visible on e-ink before terminal takes over
-        std::thread::sleep(std::time::Duration::from_millis(800));
+        // Animate starfield — stars radiate outward from center
+        // On e-ink, DU partial refreshes leave ghost trails = natural warp streaks
+        let frame_ms = 80;
+        let total_frames = 3000 / frame_ms; // ~3 seconds of warp
 
-        // Clear and transition to terminal
+        for frame in 0..total_frames {
+            // Draw stars as white dots/streaks on black background
+            for star in &mut stars {
+                let cos_a = cos_table[star.angle_idx];
+                let sin_a = sin_table[star.angle_idx];
+
+                // Streak: draw a short radial line from old to new position
+                let streak_len = (star.speed * 2).min(star.radius / 3 + 1);
+                let r_start = star.radius.saturating_sub(streak_len).max(0);
+                let r_end = star.radius;
+
+                // Draw streak (white pixels on black bg)
+                let dot_size = if star.radius > max_r as i32 / 2 { 3 } else { 2 };
+                let mut r = r_start;
+                while r <= r_end {
+                    let px = cx as i32 + (r * cos_a) / 1024;
+                    let py = cy as i32 + (r * sin_a) / 1024;
+                    // Draw a small block for visibility on e-ink
+                    for dy in 0..dot_size {
+                        for dx in 0..dot_size {
+                            fb.set_pixel(
+                                (px + dx) as usize,
+                                (py + dy) as usize,
+                                true, // white
+                            );
+                        }
+                    }
+                    r += 2;
+                }
+
+                // Advance star outward
+                // Stars accelerate as they get farther (perspective effect)
+                let accel = 1 + star.radius / (max_r as i32 / 3).max(1);
+                star.radius += star.speed + accel;
+
+                // Respawn at center when off screen
+                if star.radius > max_r as i32 {
+                    star.radius = 0;
+                    star.angle_idx = (rng_next(&mut rng_state) % 256) as usize;
+                    star.speed = 3 + (rng_next(&mut rng_state) % 12) as i32;
+                }
+            }
+
+            // Redraw title text each frame (stars may overwrite it)
+            fb.draw_str(title, title_x, title_y, title_scale, true);
+            fb.draw_str(subtitle, sub_x, sub_y, scale, true);
+            fb.draw_str(&target_str, target_x, target_y, scale, true);
+
+            // DU partial refresh — fast 2-level update, ghosts create streak trails
+            fb.refresh_fast(0, 0, screen_w as u32, screen_h as u32);
+
+            std::thread::sleep(std::time::Duration::from_millis(frame_ms as u64));
+
+            // Every 8 frames, full refresh to reset ghost buildup
+            if frame % 8 == 7 {
+                fb.refresh_full();
+            }
+        }
+
+        // Final flash: white screen (arrival)
         fb.clear();
+        fb.refresh_full();
+        std::thread::sleep(std::time::Duration::from_millis(200));
     }
 
     // ---- Initial terminal render ----
