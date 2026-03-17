@@ -1,11 +1,14 @@
 /// VT100/xterm terminal emulator.
-/// Implements enough escape sequences for interactive SSH sessions:
-/// cursor movement, erase, scrolling, basic SGR (bold/inverse).
+/// Supports cursor movement, erase, scroll regions, insert/delete lines/chars,
+/// alternate screen buffer, bracketed paste, application cursor keys,
+/// and SGR attributes (bold, underline, inverse, dim).
 
 #[derive(Debug, Clone, Copy)]
 pub struct Cell {
     pub ch: char,
     pub bold: bool,
+    pub dim: bool,
+    pub underline: bool,
     pub inverse: bool,
     pub dirty: bool,
 }
@@ -15,6 +18,8 @@ impl Default for Cell {
         Cell {
             ch: ' ',
             bold: false,
+            dim: false,
+            underline: false,
             inverse: false,
             dirty: true,
         }
@@ -53,6 +58,8 @@ pub struct Terminal {
 
     // Current text attributes
     bold: bool,
+    dim: bool,
+    underline: bool,
     inverse: bool,
 
     // Scroll region
@@ -111,6 +118,8 @@ impl Terminal {
             utf8_len: 0,
             utf8_idx: 0,
             bold: false,
+            dim: false,
+            underline: false,
             inverse: false,
             scroll_top: 0,
             scroll_bottom: rows.saturating_sub(1),
@@ -685,11 +694,16 @@ impl Terminal {
                 0 => {
                     // Reset
                     self.bold = false;
+                    self.dim = false;
+                    self.underline = false;
                     self.inverse = false;
                 }
                 1 => self.bold = true,
+                2 => self.dim = true,
+                4 => self.underline = true,
                 7 => self.inverse = true,
-                22 => self.bold = false,
+                22 => { self.bold = false; self.dim = false; }
+                24 => self.underline = false,
                 27 => self.inverse = false,
                 // Colors: we just ignore them for e-ink (no color)
                 // but we accept them so the parser doesn't break
@@ -741,6 +755,8 @@ impl Terminal {
         self.grid[self.cursor_y][self.cursor_x] = Cell {
             ch,
             bold: self.bold,
+            dim: self.dim,
+            underline: self.underline,
             inverse: self.inverse,
             dirty: true,
         };
@@ -995,6 +1011,8 @@ impl Terminal {
         self.cursor_x = 0;
         self.cursor_y = 0;
         self.bold = false;
+        self.dim = false;
+        self.underline = false;
         self.inverse = false;
         self.scroll_top = 0;
         self.scroll_bottom = self.rows.saturating_sub(1);

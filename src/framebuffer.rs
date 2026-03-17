@@ -933,8 +933,9 @@ impl Framebuffer {
         }
     }
 
-    pub fn draw_char(&mut self, ch: char, x: usize, y: usize, scale: usize, inverse: bool, bold: bool) {
+    pub fn draw_char(&mut self, ch: char, x: usize, y: usize, scale: usize, inverse: bool, bold: bool, dim: bool, underline: bool) {
         let glyph = font::glyph_char(ch);
+        let char_h = font::FONT_HEIGHT * scale;
         for row in 0..font::FONT_HEIGHT {
             // Bold: OR each row with itself shifted right by 1 (thickens strokes)
             let byte = if bold {
@@ -944,7 +945,15 @@ impl Framebuffer {
             };
             for col in 0..font::FONT_WIDTH {
                 let on = (byte >> (7 - col)) & 1 == 1;
-                let white = if inverse { on } else { !on };
+                let mut white = if inverse { on } else { !on };
+                // Dim: dither foreground pixels (skip every other pixel in a checkerboard)
+                if dim && on {
+                    let px = x + col * scale;
+                    let py = y + row * scale;
+                    if (px + py) & 1 != 0 {
+                        white = !white;
+                    }
+                }
                 for sy in 0..scale {
                     for sx in 0..scale {
                         self.set_pixel(
@@ -956,12 +965,21 @@ impl Framebuffer {
                 }
             }
         }
+        // Underline: draw a 1-pixel-tall line at the bottom of the cell
+        if underline {
+            let ul_y = y + char_h - 1;
+            let char_w = font::FONT_WIDTH * scale;
+            let ink = !inverse; // underline is "foreground" color
+            for px in x..x + char_w {
+                self.set_pixel(px, ul_y, !ink);
+            }
+        }
     }
 
     pub fn draw_str(&mut self, s: &str, x: usize, y: usize, scale: usize, inverse: bool) {
         let char_w = font::FONT_WIDTH * scale;
         for (i, ch) in s.chars().enumerate() {
-            self.draw_char(ch, x + i * char_w, y, scale, inverse, false);
+            self.draw_char(ch, x + i * char_w, y, scale, inverse, false, false, false);
         }
     }
 

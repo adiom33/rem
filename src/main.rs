@@ -261,7 +261,7 @@ fn render_terminal(
             let at_cursor = term.cursor_visible && row == term.cursor_y && col == term.cursor_x;
             let inverse = cell.inverse ^ at_cursor;
 
-            fb.draw_char(cell.ch, px, py, scale, inverse, cell.bold);
+            fb.draw_char(cell.ch, px, py, scale, inverse, cell.bold, cell.dim, cell.underline);
         }
     }
 }

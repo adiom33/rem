@@ -25,7 +25,7 @@ This is a working prototype, not a polished terminal emulator. Be aware of:
 |------|--------|
 | **Display without rm2fb** | Degraded (faint text, no waveform control). Requires `--allow-degraded` flag. |
 | **Font / Unicode** | ASCII + box-drawing + block elements. No accented chars, CJK, or emoji. |
-| **Terminal emulation** | Bold, inverse, cursor movement, scroll regions, alt screen, bracketed paste. No underline, dim, strikethrough, or 256-color. |
+| **Terminal emulation** | Bold, dim, underline, inverse, cursor movement, scroll regions, alt screen, bracketed paste. No strikethrough, blink, or 256-color. |
 | **Shell, less, man** | Expected to work well |
 | **vim (no plugins)** | Expected to work |
 | **tmux (basic)** | Expected to work (borders render correctly) |
