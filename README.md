@@ -240,7 +240,7 @@ remarkable-ssh --launcher
 | `--kb PATH` | Use a specific keyboard device (e.g. `/dev/input/event3`) |
 | `--tmux` | Auto-attach to a tmux session on the remote machine |
 | `--cmd STRING` | Run a specific command remotely instead of a shell |
-| `--scale N` | Font scale factor (default: 2, which gives 16x32 pixel characters) |
+| `--scale N` | Font scale factor (default: 3, which gives 24x48 pixel characters) |
 | `--fb PATH` | Framebuffer device path (default: `/dev/fb0`) |
 | `--shell CMD` | Shell to use when no SSH target is given (default: `/bin/sh`) |
 | `--ssh-cmd CMD` | SSH binary to use (default: `ssh`, falls back to `dbclient`) |

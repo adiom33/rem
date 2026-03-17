@@ -38,7 +38,7 @@ fn print_usage() {
     eprintln!("  remarkable-ssh [OPTIONS] [user@host]");
     eprintln!();
     eprintln!("OPTIONS:");
-    eprintln!("  --scale N       Font scale factor (default: 2)");
+    eprintln!("  --scale N       Font scale factor (default: {})", DEFAULT_FONT_SCALE);
     eprintln!("  --fb PATH       Framebuffer device (default: /dev/fb0)");
     eprintln!("  --shell CMD     Shell to run if no SSH target given (default: /bin/sh)");
     eprintln!("  --keyboard      Enable on-screen virtual keyboard (auto-enabled if no physical keyboard)");
