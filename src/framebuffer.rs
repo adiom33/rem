@@ -969,9 +969,9 @@ impl Framebuffer {
         if underline {
             let ul_y = y + char_h - 1;
             let char_w = font::FONT_WIDTH * scale;
-            let ink = !inverse; // underline is "foreground" color
+            // Foreground = black normally, white when inverse
             for px in x..x + char_w {
-                self.set_pixel(px, ul_y, !ink);
+                self.set_pixel(px, ul_y, inverse);
             }
         }
     }

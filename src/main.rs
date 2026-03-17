@@ -19,9 +19,8 @@ use keyboard::{OnScreenKeyboard, PhysicalKeyboard};
 use pty::Pty;
 use terminal::Terminal;
 
-/// Default font scale. 2x means 16x32 pixel characters.
-/// On the rM2's 1404x1872 display this gives ~87 columns x 58 rows (full screen)
-/// or ~87 cols x 37 rows with on-screen keyboard.
+/// Default font scale. 3x means 24x48 pixel characters.
+/// On the rM2's 1872x1404 landscape display this gives ~78 columns x 29 rows.
 const DEFAULT_FONT_SCALE: usize = 3;
 
 /// How many milliseconds to wait before refreshing the display after PTY output.
@@ -462,7 +461,12 @@ fn run_hotkey_mode() {
 
     let mut ctrl = false;
     let mut alt = false;
-    let mut buf = [0u8; 16];
+    // InputEvent: timeval (time_t + suseconds_t) + u16 type + u16 code + i32 value
+    // On ARM32: 8+2+2+4=16 bytes. On x86_64: 16+2+2+4=24 bytes.
+    let event_size = std::mem::size_of::<sys::time_t>()
+        + std::mem::size_of::<sys::suseconds_t>()
+        + 2 + 2 + 4;
+    let mut buf = vec![0u8; event_size];
 
     loop {
         if kb_file.read_exact(&mut buf).is_err() {
@@ -470,9 +474,10 @@ fn run_hotkey_mode() {
             continue;
         }
 
-        let ev_type = u16::from_ne_bytes([buf[8], buf[9]]);
-        let ev_code = u16::from_ne_bytes([buf[10], buf[11]]);
-        let ev_value = i32::from_ne_bytes([buf[12], buf[13], buf[14], buf[15]]);
+        let tv_size = std::mem::size_of::<sys::time_t>() + std::mem::size_of::<sys::suseconds_t>();
+        let ev_type = u16::from_ne_bytes([buf[tv_size], buf[tv_size + 1]]);
+        let ev_code = u16::from_ne_bytes([buf[tv_size + 2], buf[tv_size + 3]]);
+        let ev_value = i32::from_ne_bytes([buf[tv_size + 4], buf[tv_size + 5], buf[tv_size + 6], buf[tv_size + 7]]);
 
         // Track modifier state
         if ev_type == EV_KEY {
@@ -508,7 +513,7 @@ fn run_hotkey_mode() {
 
         // Forward the event to the virtual keyboard (for xochitl)
         unsafe {
-            sys::write(ui_fd, buf.as_ptr() as *const sys::c_void, 16);
+            sys::write(ui_fd, buf.as_ptr() as *const sys::c_void, event_size);
         }
     }
 }
@@ -852,13 +857,15 @@ fn main() {
                     let px = cx as i32 + (r * cos_a) / 1024;
                     let py = cy as i32 + (r * sin_a) / 1024;
                     // Draw a small block for visibility on e-ink
-                    for dy in 0..dot_size {
-                        for dx in 0..dot_size {
-                            fb.set_pixel(
-                                (px + dx) as usize,
-                                (py + dy) as usize,
-                                true, // white
-                            );
+                    if px >= 0 && py >= 0 {
+                        for dy in 0..dot_size {
+                            for dx in 0..dot_size {
+                                fb.set_pixel(
+                                    (px + dx) as usize,
+                                    (py + dy) as usize,
+                                    true, // white
+                                );
+                            }
                         }
                     }
                     r += 2;
