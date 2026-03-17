@@ -558,17 +558,56 @@ fn main() {
         }
     };
 
-    // ---- Initial render ----
-    fb.clear();
+    // ---- Splash screen ----
+    {
+        fb.clear();
 
-    let welcome = if config.ssh_target.is_some() {
-        format!("remarkable-ssh | Connecting to: {}", display_target)
-    } else {
-        format!("remarkable-ssh | {}", display_target)
-    };
-    term.process(welcome.as_bytes());
-    term.process(b"\r\n");
+        let screen_w = fb.width;
+        let screen_h = fb.height;
 
+        // Title: "rem" at 6x scale
+        let title_scale = 6;
+        let title = "rem";
+        let title_cw = font::FONT_WIDTH * title_scale;
+        let title_ch = font::FONT_HEIGHT * title_scale;
+        let title_x = (screen_w - title.len() * title_cw) / 2;
+        let title_y = screen_h / 4;
+        fb.draw_str(title, title_x, title_y, title_scale, false);
+
+        // Underline beneath title
+        let line_w = title.len() * title_cw + title_cw;
+        let line_x = (screen_w - line_w) / 2;
+        let line_y = title_y + title_ch + char_h / 4;
+        fb.draw_hline(line_x, line_y, line_w);
+
+        // Subtitle
+        let sub_scale = scale;
+        let sub_cw = font::FONT_WIDTH * sub_scale;
+        let subtitle = "remarkable terminal";
+        let sub_x = (screen_w - subtitle.len() * sub_cw) / 2;
+        let sub_y = line_y + char_h;
+        fb.draw_str(subtitle, sub_x, sub_y, sub_scale, false);
+
+        // Connection target
+        let target_str = if config.ssh_target.is_some() {
+            format!("> {}", display_target)
+        } else {
+            format!("> {}", display_target)
+        };
+        let target_x = (screen_w - target_str.len() * sub_cw) / 2;
+        let target_y = sub_y + char_h * 2;
+        fb.draw_str(&target_str, target_x, target_y, sub_scale, false);
+
+        fb.refresh_full();
+
+        // Brief pause so the splash is visible on e-ink before terminal takes over
+        std::thread::sleep(std::time::Duration::from_millis(800));
+
+        // Clear and transition to terminal
+        fb.clear();
+    }
+
+    // ---- Initial terminal render ----
     render_terminal(&mut fb, &term, scale);
     render_status_bar(&mut fb, &term, scale, term_area_height, display_target);
 
@@ -775,17 +814,20 @@ fn main() {
         }
     }
 
-    // ---- Cleanup ----
+    // ---- Exit screen ----
+    fb.clear();
     if fb.is_rm2fb() {
         // With rm2fb, xochitl is still running — just clear our drawing
-        fb.clear();
         fb.refresh_full();
     } else {
-        fb.clear();
-        fb.draw_str("Session ended. Returning to xochitl...", 20, 20, scale, false);
+        // Centered exit message
+        let exit_msg = "Session ended.";
+        let exit_cw = font::FONT_WIDTH * scale;
+        let exit_x = (fb.width - exit_msg.len() * exit_cw) / 2;
+        let exit_y = fb.height / 3;
+        fb.draw_str(exit_msg, exit_x, exit_y, scale, false);
         fb.refresh_full();
-        // Give the e-ink panel time to finish the refresh before xochitl takes over
-        std::thread::sleep(std::time::Duration::from_secs(2));
+        std::thread::sleep(std::time::Duration::from_secs(1));
         restart_xochitl();
     }
 
