@@ -150,7 +150,7 @@ run_remote '
     if nm "$XOCHITL" 2>/dev/null | head -1 >/dev/null 2>&1; then
         echo "  Symbols: present (nm works)"
     else
-        echo "  Symbols: stripped (will need Ghidra or objdump for addresses)"
+        echo "  Symbols: stripped (remarkable-ssh --setup handles this automatically)"
     fi
 '
 
@@ -160,7 +160,7 @@ echo ""
 echo "Next steps depend on the results above:"
 echo ""
 echo "  If [4/5] says 'Libraries OK':"
-echo "    -> Just need addresses. Run: ./scripts/extract-rm2fb-addrs.sh $TABLET_IP"
+echo "    -> Run install.sh (auto-extracts addresses) or: ssh root@$TABLET_IP remarkable-ssh --setup"
 echo ""
 echo "  If [4/5] says 'INCOMPATIBLE' or no .so found:"
 echo "    -> Need to build rm2fb from source. Run: ./scripts/build-rm2fb.sh $TABLET_IP"

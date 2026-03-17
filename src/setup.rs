@@ -491,8 +491,8 @@ pub fn run_setup() -> Result<(), String> {
             eprintln!("  create: NOT FOUND");
         }
         eprintln!();
-        eprintln!("You may need to find the addresses manually with Ghidra.");
-        eprintln!("See: ./scripts/extract-rm2fb-addrs.sh");
+        eprintln!("You may need to find the addresses manually.");
+        eprintln!("Deploy with: ./scripts/deploy-rm2fb-conf.sh TABLET_IP 0x<update> 0x<create>");
         return Err("Incomplete address extraction".into());
     }
 

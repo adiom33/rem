@@ -26,7 +26,7 @@ if [ $# -lt 3 ]; then
     echo "  CREATE_ADDR   - Address of the 'create' function (e.g. 0x3a4d5e)"
     echo "  SERVER_SO_PATH - Optional: path to librm2fb_server.so to deploy"
     echo ""
-    echo "Get the addresses by running: ./scripts/extract-rm2fb-addrs.sh"
+    echo "Get the addresses by running: remarkable-ssh --setup (on the tablet)"
     exit 1
 fi
 
