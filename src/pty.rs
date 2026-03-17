@@ -162,6 +162,7 @@ impl Pty {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn set_size(&self, cols: u16, rows: u16) {
         let ws = sys::winsize {
             ws_col: cols,

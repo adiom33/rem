@@ -933,10 +933,15 @@ impl Framebuffer {
         }
     }
 
-    pub fn draw_char(&mut self, ch: char, x: usize, y: usize, scale: usize, inverse: bool) {
+    pub fn draw_char(&mut self, ch: char, x: usize, y: usize, scale: usize, inverse: bool, bold: bool) {
         let glyph = font::glyph_char(ch);
         for row in 0..font::FONT_HEIGHT {
-            let byte = glyph[row];
+            // Bold: OR each row with itself shifted right by 1 (thickens strokes)
+            let byte = if bold {
+                glyph[row] | (glyph[row] >> 1)
+            } else {
+                glyph[row]
+            };
             for col in 0..font::FONT_WIDTH {
                 let on = (byte >> (7 - col)) & 1 == 1;
                 let white = if inverse { on } else { !on };
@@ -956,7 +961,7 @@ impl Framebuffer {
     pub fn draw_str(&mut self, s: &str, x: usize, y: usize, scale: usize, inverse: bool) {
         let char_w = font::FONT_WIDTH * scale;
         for (i, ch) in s.chars().enumerate() {
-            self.draw_char(ch, x + i * char_w, y, scale, inverse);
+            self.draw_char(ch, x + i * char_w, y, scale, inverse, false);
         }
     }
 

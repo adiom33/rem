@@ -261,7 +261,7 @@ fn render_terminal(
             let at_cursor = term.cursor_visible && row == term.cursor_y && col == term.cursor_x;
             let inverse = cell.inverse ^ at_cursor;
 
-            fb.draw_char(cell.ch, px, py, scale, inverse);
+            fb.draw_char(cell.ch, px, py, scale, inverse, cell.bold);
         }
     }
 }
@@ -361,7 +361,6 @@ fn run_hotkey_mode() {
     // uinput ioctls
     const UI_DEV_SETUP: sys::c_ulong = 0x405c5503;  // _IOW('U', 3, uinput_setup)
     const UI_DEV_CREATE: sys::c_ulong = 0x5501;      // _IO('U', 1)
-    const UI_DEV_DESTROY: sys::c_ulong = 0x5502;     // _IO('U', 2)
     const UI_SET_EVBIT: sys::c_ulong = 0x40045564;   // _IOW('U', 100, int)
     const UI_SET_KEYBIT: sys::c_ulong = 0x40045565;  // _IOW('U', 101, int)
 
@@ -464,7 +463,6 @@ fn run_hotkey_mode() {
     let mut ctrl = false;
     let mut alt = false;
     let mut buf = [0u8; 16];
-    let mut terminal_active = false;
 
     loop {
         if kb_file.read_exact(&mut buf).is_err() {
@@ -481,9 +479,8 @@ fn run_hotkey_mode() {
             match ev_code {
                 KEY_LEFTCTRL => ctrl = ev_value != 0,
                 KEY_LEFTALT => alt = ev_value != 0,
-                KEY_T if ev_value == 1 && ctrl && alt && !terminal_active => {
+                KEY_T if ev_value == 1 && ctrl && alt => {
                     eprintln!("Hotkey daemon: Ctrl+Alt+T — launching terminal");
-                    terminal_active = true;
 
                     // Stop forwarding to xochitl while terminal is active
                     let exe = std::env::current_exe()
@@ -503,7 +500,6 @@ fn run_hotkey_mode() {
 
                     ctrl = false;
                     alt = false;
-                    terminal_active = false;
                     continue;
                 }
                 _ => {}
